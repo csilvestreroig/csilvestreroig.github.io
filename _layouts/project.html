@@ -1,0 +1,14 @@
+---
+<!-- Note: Jekyll ignores front matter in .html layouts -->
+---
+{% include header.html %}
+<article>
+  <h2>{{ page.title }}</h2>
+  <p><em>{{ page.description }}</em></p>
+  <section>
+    {{ content }}
+  </section>
+  <hr>
+  <p><a href="{{ site.baseurl }}/">← Back to all projects</a></p>
+</article>
+{% include footer.html %}
