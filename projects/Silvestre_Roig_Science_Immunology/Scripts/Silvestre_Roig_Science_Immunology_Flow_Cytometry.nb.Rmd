@@ -1,0 +1,1102 @@
+---
+title: "Silvestre_Roig_et_al. Science_Immunology_Flow_cytometry_Mass_Cytometry"
+output: html_notebook
+---
+Creator: Carlos Silvestre Roig
+
+#Loading libraries
+```{r}
+library(flowCore)
+library(ggcyto)
+library(ggplot2)
+library(flowCore)
+library(stringr)
+library(uwot)
+library(CATALYST)
+library(ConsensusClusterPlus)
+library(FlowSOM)
+library(reshape2)
+library(scater)
+library(dplyr)
+library(plotly)
+library(viridis)
+library(hrbrthemes)
+```
+
+# VISUALIZATION OF SPECTRAL FLOW CYTOMETRY ANALYSIS
+FIGURE 1, PANEL E
+#Loading data
+```{r}
+All <- list.files(path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-168_Activation_different_models/NSA_009 _ CPM-AMD,LPS part_Neutro mix/ggCyto", pattern=".fcs$")
+
+All <- flowCore::read.flowSet(All, path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-168_Activation_different_models/NSA_009 _ CPM-AMD,LPS part_Neutro mix/ggCyto", ignore.text.offset = TRUE)
+```
+
+#Extracting data
+```{r}
+#BL_Control
+BL_control_progenitors<- as.data.frame(All@frames[["BL_Control_concat_kit_ly6g_1_Progenitors_CD49d, ckit-CD117 subset.fcs"]]@exprs)
+BL_control_progenitors<-BL_control_progenitors %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_control_progenitors$Cell_type <- "Progenitor"
+BL_control_progenitors$Condition <- "Bl_control"
+
+BL_control_immNEU<- as.data.frame(All@frames[["BL_Control_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_immNEU.fcs"]]@exprs)
+BL_control_immNEU<-BL_control_immNEU %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_control_immNEU$Cell_type <- "immNEU"
+BL_control_immNEU$Condition <- "Bl_control"
+
+BL_control_matNEU1<- as.data.frame(All@frames[["BL_Control_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_matNEU1_matNEU1.fcs"]]@exprs)
+BL_control_matNEU1<-BL_control_matNEU1 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_control_matNEU1$Cell_type <- "matNEU1"
+BL_control_matNEU1$Condition <- "Bl_control"
+
+BL_control_matNEU2<- as.data.frame(All@frames[["BL_Control_concat_kit_ly6g_1_matNEU1_matNEU2.fcs"]]@exprs)
+BL_control_matNEU2<-BL_control_matNEU2 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_control_matNEU2$Cell_type <- "matNEU2"
+BL_control_matNEU2$Condition <- "Bl_control"
+
+#Bl_CPM_AMD
+BL_CPM_AMD_progenitors<- as.data.frame(All@frames[["BL_CPM-AMD_concat_kit_ly6g_1_Progenitors_CD49d, ckit-CD117 subset.fcs"]]@exprs)
+BL_CPM_AMD_progenitors<-BL_control_progenitors %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_CPM_AMD_progenitors$Cell_type <- "Progenitor"
+BL_CPM_AMD_progenitors$Condition <- "Bl_CPM_AMD"
+
+BL_CPM_AMD_immNEU<- as.data.frame(All@frames[["BL_CPM-AMD_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_immNEU.fcs"]]@exprs)
+BL_CPM_AMD_immNEU<-BL_CPM_AMD_immNEU %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_CPM_AMD_immNEU$Cell_type <- "immNEU"
+BL_CPM_AMD_immNEU$Condition <- "Bl_CPM_AMD"
+
+BL_CPM_AMD_matNEU1<- as.data.frame(All@frames[["BL_CPM-AMD_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_matNEU1_matNEU1.fcs"]]@exprs)
+BL_CPM_AMD_matNEU1<-BL_CPM_AMD_matNEU1 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_CPM_AMD_matNEU1$Cell_type <- "matNEU1"
+BL_CPM_AMD_matNEU1$Condition <- "Bl_CPM_AMD"
+
+BL_CPM_AMD_matNEU2<- as.data.frame(All@frames[["BL_CPM-AMD_concat_kit_ly6g_1_matNEU1_matNEU2.fcs"]]@exprs)
+BL_CPM_AMD_matNEU2<-BL_CPM_AMD_matNEU2 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BL_CPM_AMD_matNEU2$Cell_type <- "matNEU2"
+BL_CPM_AMD_matNEU2$Condition <- "Bl_CPM_AMD"
+
+#BM_Control
+BM_control_progenitors<- as.data.frame(All@frames[["BM_Control_concat_kit_ly6g_1_Progenitors_CD49d, ckit-CD117 subset.fcs"]]@exprs)
+BM_control_progenitors<-BM_control_progenitors %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_control_progenitors$Cell_type <- "Progenitor"
+BM_control_progenitors$Condition <- "BM_control"
+
+BM_control_immNEU<- as.data.frame(All@frames[["BM_Control_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_immNEU.fcs"]]@exprs)
+BM_control_immNEU<-BM_control_immNEU %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_control_immNEU$Cell_type <- "immNEU"
+BM_control_immNEU$Condition <- "BM_control"
+
+BM_control_matNEU1<- as.data.frame(All@frames[["BM_Control_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_matNEU1_matNEU1.fcs"]]@exprs)
+BM_control_matNEU1<-BM_control_matNEU1 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_control_matNEU1$Cell_type <- "matNEU1"
+BM_control_matNEU1$Condition <- "BM_control"
+
+BM_control_matNEU2<- as.data.frame(All@frames[["BM_Control_concat_kit_ly6g_1_matNEU1_matNEU2.fcs"]]@exprs)
+BM_control_matNEU2<-BM_control_matNEU2 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_control_matNEU2$Cell_type <- "matNEU2"
+BM_control_matNEU2$Condition <- "BM_control"
+
+#BM_CPM_AMD
+BM_CPM_AMD_progenitors<- as.data.frame(All@frames[["BM_CPM-AMD_concat_kit_ly6g_1_Progenitors_CD49d, ckit-CD117 subset.fcs"]]@exprs)
+BM_CPM_AMD_progenitors<-BM_CPM_AMD_progenitors %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_CPM_AMD_progenitors$Cell_type <- "Progenitor"
+BM_CPM_AMD_progenitors$Condition <- "BM_CPM_AMD"
+
+BM_CPM_AMD_immNEU<- as.data.frame(All@frames[["BM_CPM-AMD_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_immNEU.fcs"]]@exprs)
+BM_CPM_AMD_immNEU<-BM_CPM_AMD_immNEU %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_CPM_AMD_immNEU$Cell_type <- "immNEU"
+BM_CPM_AMD_immNEU$Condition <- "BM_CPM_AMD"
+
+BM_CPM_AMD_matNEU1<- as.data.frame(All@frames[["BM_CPM-AMD_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_matNEU1_matNEU1.fcs"]]@exprs)
+BM_CPM_AMD_matNEU1<-BM_CPM_AMD_matNEU1 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_CPM_AMD_matNEU1$Cell_type <- "matNEU1"
+BM_CPM_AMD_matNEU1$Condition <- "BM_CPM_AMD"
+
+BM_CPM_AMD_matNEU2<- as.data.frame(All@frames[["BM_CPM-AMD_concat_kit_ly6g_1_matNEU1_matNEU2.fcs"]]@exprs)
+BM_CPM_AMD_matNEU2<-BM_CPM_AMD_matNEU2 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+BM_CPM_AMD_matNEU2$Cell_type <- "matNEU2"
+BM_CPM_AMD_matNEU2$Condition <- "BM_CPM_AMD"
+
+#SP_Control
+SP_control_progenitors<- as.data.frame(All@frames[["SP_control_concat_kit_ly6g_1_Progenitors_CD49d, ckit-CD117 subset.fcs"]]@exprs)
+SP_control_progenitors<-SP_control_progenitors %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_control_progenitors$Cell_type <- "Progenitor"
+SP_control_progenitors$Condition <- "SP_control"
+
+SP_control_immNEU<- as.data.frame(All@frames[["SP_control_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_immNEU.fcs"]]@exprs)
+SP_control_immNEU<-SP_control_immNEU %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_control_immNEU$Cell_type <- "immNEU"
+SP_control_immNEU$Condition <- "SP_control"
+
+SP_control_matNEU1<- as.data.frame(All@frames[["SP_control_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_matNEU1_matNEU1.fcs"]]@exprs)
+SP_control_matNEU1<-SP_control_matNEU1 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_control_matNEU1$Cell_type <- "matNEU1"
+SP_control_matNEU1$Condition <- "SP_control"
+
+SP_control_matNEU2<- as.data.frame(All@frames[["SP_control_concat_kit_ly6g_1_matNEU1_matNEU2.fcs"]]@exprs)
+SP_control_matNEU2<-SP_control_matNEU2 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_control_matNEU2$Cell_type <- "matNEU2"
+SP_control_matNEU2$Condition <- "SP_control"
+
+#SP_CPM_AMD
+SP_CPM_AMD_progenitors<- as.data.frame(All@frames[["SP_CPM-AMD_concat_kit_ly6g_1_Progenitors_CD49d, ckit-CD117 subset.fcs"]]@exprs)
+SP_CPM_AMD_progenitors<-SP_CPM_AMD_progenitors %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_CPM_AMD_progenitors$Cell_type <- "Progenitor"
+SP_CPM_AMD_progenitors$Condition <- "SP_CPM_AMD"
+
+SP_CPM_AMD_immNEU<- as.data.frame(All@frames[["SP_CPM-AMD_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_immNEU.fcs"]]@exprs)
+SP_CPM_AMD_immNEU<-SP_CPM_AMD_immNEU %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_CPM_AMD_immNEU$Cell_type <- "immNEU"
+SP_CPM_AMD_immNEU$Condition <- "SP_CPM_AMD"
+
+SP_CPM_AMD_matNEU1<- as.data.frame(All@frames[["SP_CPM-AMD_concat_kit_ly6g_1_CXCR4, ckit-CD117 subset_matNEU1_matNEU1.fcs"]]@exprs)
+SP_CPM_AMD_matNEU1<-SP_CPM_AMD_matNEU1 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_CPM_AMD_matNEU1$Cell_type <- "matNEU1"
+SP_CPM_AMD_matNEU1$Condition <- "SP_CPM_AMD"
+
+SP_CPM_AMD_matNEU2<- as.data.frame(All@frames[["SP_CPM-AMD_concat_kit_ly6g_1_matNEU1_matNEU2.fcs"]]@exprs)
+SP_CPM_AMD_matNEU2<-SP_CPM_AMD_matNEU2 %>% dplyr::select("PHATE_1_PC93", "PHATE_2_PC93")
+SP_CPM_AMD_matNEU2$Cell_type <- "matNEU2"
+SP_CPM_AMD_matNEU2$Condition <- "SP_CPM_AMD"
+
+data_to_plot<- rbind(BL_control_progenitors, BL_control_immNEU, BL_control_matNEU1, BL_control_matNEU2, BL_CPM_AMD_progenitors, BL_CPM_AMD_immNEU, BL_CPM_AMD_matNEU1, BL_CPM_AMD_matNEU2, BM_control_progenitors, BM_control_immNEU, BM_control_matNEU1, BM_control_matNEU2, BM_CPM_AMD_progenitors, BM_CPM_AMD_immNEU, BM_CPM_AMD_matNEU1, BM_CPM_AMD_matNEU2, SP_control_progenitors, SP_control_immNEU, SP_control_matNEU1, SP_control_matNEU2, SP_CPM_AMD_progenitors, SP_CPM_AMD_immNEU, SP_CPM_AMD_matNEU1, SP_CPM_AMD_matNEU2)
+```
+
+#Visualizing PHATE from figure 1
+```{r}
+data_to_plot$Condition<- factor(data_to_plot$Condition, levels = c("Bl_control", "BM_control", "SP_control", "Bl_CPM_AMD", "BM_CPM_AMD", "SP_CPM_AMD"))
+data_to_plot$Cell_type<- factor(data_to_plot$Cell_type, levels = c("Progenitor", "immNEU", "matNEU1", "matNEU2"))
+
+ggplot(data_to_plot, aes(x=PHATE_1_PC93, y=PHATE_2_PC93, color=Cell_type)) +
+  geom_point(alpha=0.25, size = 1.5) +
+  scale_color_manual(values=c("Progenitor"= 'lightgray',"immNEU"='palegreen4',"matNEU1"= 'brown4',"matNEU2"= "brown4"))+
+ theme_classic()+
+    facet_wrap(~ Condition, nrow = 2)+
+  theme(aspect.ratio=1,axis.text.x = element_blank(), axis.text.y = element_blank(),axis.ticks =   element_blank()) +xlab("PHATE-1") + ylab("PHATE-2")
+```
+
+#FIGURE 5, PANEL J
+#Loading files
+Loading fcs from different conditions
+```{r}
+#postInfection_KO
+postInfection_KO <- list.files(path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/postInfection_KO", pattern=".fcs$")
+
+postInfection_KO <- flowCore::read.flowSet(postInfection_KO, path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/postInfection_KO")
+
+#postInfection_WT
+postInfection_WT <- list.files(path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/postInfection_WT", pattern=".fcs$")
+
+postInfection_WT <- flowCore::read.flowSet(postInfection_WT, path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/postInfection_WT")
+
+#preInfection_KO
+preInfection_KO <- list.files(path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/preInfection_KO", pattern=".fcs$")
+
+preInfection_KO <- flowCore::read.flowSet(preInfection_KO, path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/preInfection_KO")
+
+#preInfection_WT
+preInfection_WT <- list.files(path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/preInfection_WT", pattern=".fcs$")
+
+preInfection_WT <- flowCore::read.flowSet(preInfection_WT, path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-164_IFNAR1/Infection_09.02.2024/ggCyto/preInfection_WT")
+```
+Preparing data frames
+```{r}
+data_preInfectionWT<- as.data.frame(preInfection_WT@frames[["preInfection_WT_concat_1000_Final_1_pre_Infection_WT.fcs"]]@exprs)
+data_preInfectionWT_clean<-data_preInfectionWT %>% select("UMAP_1_4TGV", "UMAP_2_4TGV")
+data_preInfectionWT_clean$Condition<- "preInfection_WT"
+
+data_preInfectionKO<- as.data.frame(preInfection_KO@frames[["preInfection_KO_concat_1000_Final_1_pre_Infection_KO.fcs"]]@exprs)
+data_preInfectionKO_clean<-data_preInfectionKO %>% select("UMAP_1_4TGV", "UMAP_2_4TGV")
+data_preInfectionKO_clean$Condition<- "preInfection_KO"
+
+data_postInfectionWT<- as.data.frame(postInfection_WT@frames[["postInfection_WT_concat_1000_Final_1_post_Infectio_WT.fcs"]]@exprs)
+data_postInfectionWT_clean<-data_postInfectionWT %>% select("UMAP_1_4TGV", "UMAP_2_4TGV")
+data_postInfectionWT_clean$Condition<- "postInfection_WT"
+
+data_postInfectionKO<- as.data.frame(postInfection_KO@frames[["postInfection_KO_concat_1000_Final_1_post_Infectio_KO.fcs"]]@exprs)
+data_postInfectionKO_clean<-data_postInfectionKO %>% select("UMAP_1_4TGV", "UMAP_2_4TGV")
+data_postInfectionKO_clean$Condition<- "postInfection_KO"
+
+
+#merging all dataframes
+
+data_conditions<- rbind(data_preInfectionWT_clean, data_preInfectionKO_clean, data_postInfectionWT_clean, data_postInfectionKO_clean)
+```
+
+#Visualizing UMAP
+```{r}
+data_conditions$Condition<- factor(data_conditions$Condition, levels = c("preInfection_WT", "preInfection_KO", "postInfection_WT", "postInfection_KO"))
+
+ggplot(data_conditions, aes(x=UMAP_1_4TGV, y=UMAP_2_4TGV, color=Condition)) +
+  geom_point(alpha=0.25, size = 1) +
+  scale_color_manual(values=c("preInfection_WT"= 'maroon3',"preInfection_KO"='deepskyblue3',"postInfection_WT"= 'maroon4',"postInfection_KO"= "deepskyblue4"))+
+ theme_classic()+
+  theme(legend.position = "none",aspect.ratio=1,axis.text.x = element_blank(), axis.text.y = element_blank(),axis.ticks = element_blank()) +xlab("UMAP-1") + ylab("UMAP-2")+
+facet_grid(~ Condition)
+```
+
+#Heatmap
+```{r}
+library(pheatmap)
+temp = list.files(pattern="*.csv")
+myfiles = lapply(temp, read.csv)# Files from ViolinBox calculated on Phenograph groups
+
+# Calculate the average of each column across all tables
+average_across_tables <- lapply(myfiles, function(tbl) colMeans(tbl, na.rm = TRUE))
+
+# Convert the list to a data frame for easier viewing
+average_df <- as.data.frame(do.call(cbind, average_across_tables))
+
+# Calculate the Z-scores
+scaled_rows <- t(apply(average_df, 1, scale))
+
+# Convert the matrix to a data frame for easier viewing
+scaled_rows_df <- as.data.frame(scaled_rows)
+
+# Remove the last row
+scaled_rows_df <- scaled_rows_df[-nrow(scaled_rows_df), ]
+
+#Changing names of rows
+rownames(scaled_rows_df)<- c("SSC", "CD101", "CD14","CD24", "LY6G", "CD11B","CD49D", "MHC-II","CD115", "c-KIT", "CD62L", "CD44", "CXCR4","CCR2", "LY6C", "CXCR2", "CD80", "CD16", "CD45", "CD41")
+
+#Changing names of columns
+colnames(scaled_rows_df)<-paste("Cluster", 1:(ncol(scaled_rows_df)), sep = "_")
+
+#creating numeric (data) and metadata dataframe
+Metadata<- colnames(scaled_rows_df)
+Data<- scaled_rows_df[ c(1:20),]
+
+#Convert in matrix
+Data= t(as.matrix(Data))
+Metadata= as.data.frame(Metadata)
+
+#Set rownames from both numeric matrix and metadata with same names
+rownames(Metadata)<- Cell_names
+rownames(Data)<- Cell_names
+
+colnames(Metadata)<- "Cluster"
+
+# creat colours for each group
+newCols <- colorRampPalette(grDevices::rainbow(length(unique(Metadata))))
+annoCol <- newCols(length(unique(Metadata)))
+names(annoCol) <- unique(Metadata)
+annoCol <- list(category = annoCol)
+
+pheatmap(mat = Data, cluster_rows = FALSE, annotation_row = Metadata, annotation_colors = annoCol, main = "Phenograph", show_rownames = FALSE)
+```
+
+
+#MASS CYTOMETRY
+```{r}
+############################################################
+## 1. Load FCS files
+############################################################
+
+library(flowCore)
+library(CATALYST)
+library(dplyr)
+
+# Base directory where the FCS files live
+data_dir <- "~/Dropbox/Backup_Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-124_CYTOF/Results/Cytof_Workflow/Live"
+
+# Clean any whitespace in file names from the metadata
+md$file_name <- trimws(md$file_name)
+
+# Read all FCS files as a flowSet
+fs <- flowCore::read.flowSet(
+  files               = md$file_name,
+  path                = data_dir,
+  transformation      = FALSE,
+  truncate_max_range  = FALSE
+)
+fs
+
+
+############################################################
+## 2. Build panel from FCS parameters
+############################################################
+
+panel_fcs <- flowCore::pData(parameters(fs[[1]]))
+head(panel_fcs)
+
+# Typical structure: columns 'name' (FCS colname) and 'desc' (antigen)
+# Build a CATALYST-style panel: fcs_colname, antigen, marker_class
+panel <- panel_fcs %>%
+  as.data.frame() %>%
+  dplyr::select(name, desc) %>%
+  dplyr::rename(
+    fcs_colname = name,
+    antigen     = desc
+  )
+
+# Add a marker_class column (you can refine this by hand later)
+# e.g., "type" = lineage, "state" = functional, "none" = other
+panel$marker_class <- "type"   # placeholder – adjust per marker if needed
+
+head(panel)
+
+
+############################################################
+## 2. Build panel from FCS parameters
+############################################################
+
+panel_fcs <- flowCore::pData(parameters(fs[[1]]))
+head(panel_fcs)
+
+# Typical structure: columns 'name' (FCS colname) and 'desc' (antigen)
+# Build a CATALYST-style panel: fcs_colname, antigen, marker_class
+panel <- panel_fcs %>%
+  as.data.frame() %>%
+  dplyr::select(name, desc) %>%
+  dplyr::rename(
+    fcs_colname = name,
+    antigen     = desc
+  )
+
+# Add a marker_class column (you can refine this by hand later)
+# e.g., "type" = lineage, "state" = functional, "none" = other
+panel$marker_class <- "type"   # placeholder – adjust per marker if needed
+
+head(panel)
+
+
+############################################################
+## 4. Arcsinh transform + construct SingleCellExperiment
+############################################################
+
+cofactor <- 5
+
+sce <- prepData(
+  fs       = fs,
+  panel    = panel,
+  md       = md,
+  features = panel$fcs_colname,   # which channels to keep (usually all metal channels)
+  md_cols  = md_cols,
+  cofactor = cofactor
+)
+
+sce
+```
+
+```{r}
+############################################################
+## Dimensionality reduction (t-SNE & UMAP on live cells)
+############################################################
+
+set.seed(1234)
+
+## Use type/lineage markers for DR & clustering
+## If you already defined marker_class in `panel` ("type", "state", "none"):
+type_markers <- panel$antigen[panel$marker_class == "type"]
+
+## Fallback if you haven't set marker_class yet:
+if (all(is.na(type_markers)) || length(type_markers) == 0) {
+  type_markers <- panel$antigen
+}
+
+## t-SNE on 5,000 randomly sampled cells
+sce <- runDR(
+  sce,
+  dr      = "TSNE",
+  features = type_markers,
+  cells    = 5000,
+  name     = "TSNE_5000"
+)
+
+## UMAP on the same feature set and number of cells
+sce <- runDR(
+  sce,
+  dr      = "UMAP",
+  features = type_markers,
+  cells    = 5000,
+  name     = "UMAP_5000"
+)
+
+## Quick visual checks
+plotDR(
+  sce,
+  dr        = "TSNE_5000",
+  color_by  = "condition",   # or "cluster_id" after clustering
+  size      = 1
+)
+
+plotDR(
+  sce,
+  dr        = "UMAP_5000",
+  color_by  = "condition",
+  size      = 1
+)
+
+```
+
+```{r}
+############################################################
+## Cell population identification (FlowSOM + meta-clustering)
+############################################################
+
+set.seed(1234)
+
+sce <- cluster(
+  sce,
+  features = type_markers,
+  xdim     = 10,
+  ydim     = 10,
+  maxK     = 20,
+  seed     = 1234
+)
+
+## Heatmap of marker expression by meta-clusters (K = 20)
+plotExprHeatmap(
+  sce,
+  features = type_markers,
+  by       = "cluster_id",
+  k        = "meta20",
+  bars     = TRUE,
+  perc     = TRUE,
+  scale    = "last"
+)
+
+## Expression of CXCR2 across meta10 clusters
+plotClusterExprs(
+  sce,
+  k        = "meta10",
+  features = "CXCR2"
+)
+
+```
+
+```{r}
+############################################################
+## Map SOM clusters (som100) to meta20 metaclusters
+############################################################
+
+# Extract cluster code table from CATALYST
+clusters <- as.data.frame(metadata(sce)[["cluster_codes"]])
+head(clusters)
+# typically: som100, meta20, meta10, ...
+
+# Build a mapping: cluster_id (som100) -> "Meta_<meta20>"
+cluster_map <- clusters |>
+  dplyr::transmute(
+    cluster_id   = som100,
+    Metacluster  = paste0("Meta_", meta20)
+  )
+
+# Initialize Metacluster column
+sce$Metacluster <- NA_character_
+
+# Map each cell's cluster_id to its Meta_XX label
+sce$Metacluster <- cluster_map$Metacluster[
+  match(sce$cluster_id, cluster_map$cluster_id)
+]
+
+# Make it an ordered factor by meta20
+meta_levels <- paste0("Meta_", sort(unique(clusters$meta20)))
+sce$Metacluster <- factor(sce$Metacluster, levels = meta_levels)
+
+# Quick sanity check
+table(sce$Metacluster, useNA = "ifany")
+
+```
+
+```{r}
+############################################################
+## Cell annotation: neutrophils in Blood / BM / Spleen
+############################################################
+
+## 1. Subset neutrophil metaclusters and organs -----------
+
+# Neutrophil metaclusters of interest
+neutro_metas <- c("Meta_15", "Meta_17", "Meta_19")
+
+sce_neut <- sce[
+  ,
+  sce$Metacluster %in% neutro_metas &
+    sce$organ %in% c("Blood", "Bone Marrow", "Spleen")
+]
+
+# Neutrophil-relevant markers (must match panel$antigen / colnames(exprs))
+neutrophil_markers <- c(
+  "MHC-II", "CD29", "LY6C", "SiglecF", "CD114", "Ly6AE", "CD117", "CXCR2",
+  "CD49d", "CD16/32", "CD244", "CD14", "CD49e", "CD62L", "CD97", "CD11C",
+  "CD11B", "CD115", "CD34", "LY6G", "CD11A", "CXCR4", "CD24", "CD45",
+  "CD80", "CD86", "CD49f", "CD18", "CD54", "CD44"
+)
+
+# Only keep markers that are present in the data
+available_markers <- intersect(neutrophil_markers, colnames(assay(sce_neut, "exprs")))
+missing_markers   <- setdiff(neutrophil_markers, available_markers)
+
+if (length(missing_markers) > 0) {
+  message("These neutrophil_markers are not present and will be ignored: ",
+          paste(missing_markers, collapse = ", "))
+}
+
+############################################################
+## 2. DR: TSNE & UMAP on neutrophil subset
+############################################################
+
+set.seed(1234)
+sce_neut <- runDR(
+  sce_neut,
+  dr       = "TSNE",
+  features = available_markers,
+  cells    = 5000,
+  name     = "TSNE_neutro"
+)
+
+set.seed(1234)
+sce_neut <- runDR(
+  sce_neut,
+  dr       = "UMAP",
+  features = available_markers,
+  cells    = 5000,
+  name     = "UMAP_neutro"
+)
+
+# Quick visualizations
+plotDR(
+  sce_neut,
+  dr       = "TSNE_neutro",
+  color_by = "organ",
+  facet_by = c("condition", "organ"),
+  size     = 1
+)
+
+plotDR(
+  sce_neut,
+  dr       = "UMAP_neutro",
+  color_by = "organ",
+  facet_by = c("condition", "organ"),
+  size     = 1
+)
+
+
+############################################################
+## 3. FlowSOM clustering on neutrophil markers
+############################################################
+
+set.seed(1234)
+sce_neut <- cluster(
+  sce_neut,
+  features = available_markers,
+  xdim     = 10,
+  ydim     = 10,
+  maxK     = 15,
+  seed     = 1234
+)
+
+# Heatmap of marker expression by meta10 clusters
+plotExprHeatmap(
+  sce_neut,
+  features = available_markers,
+  by       = "cluster_id",
+  k        = "meta10",
+  bars     = TRUE,
+  perc     = TRUE,
+  scale    = "last"
+)
+```
+
+```{r}
+############################################################
+## Create Metacluster column from meta10 codes (neutrophils)
+############################################################
+
+# Extract cluster code table for this subset
+clusters_neut <- as.data.frame(metadata(sce_BL_BM_SP_2)[["cluster_codes"]])
+head(clusters_neut)
+# columns typically: som100, meta10, meta15, etc.
+
+# Build mapping: som100 (cluster_id) -> "Meta_<meta10>"
+cluster_map_neut <- clusters_neut |>
+  dplyr::transmute(
+    cluster_id  = som100,
+    Metacluster = paste0("Meta_", meta10)
+  )
+
+# Initialize Metacluster column
+sce_BL_BM_SP_2$Metacluster <- NA_character_
+
+# Map each cell's cluster_id to its Meta_XX label
+sce_BL_BM_SP_2$Metacluster <- cluster_map_neut$Metacluster[
+  match(sce_BL_BM_SP_2$cluster_id, cluster_map_neut$cluster_id)
+]
+
+# Make it an ordered factor by meta10
+meta_levels_neut <- paste0("Meta_", sort(unique(clusters_neut$meta10)))
+sce_BL_BM_SP_2$Metacluster <- factor(sce_BL_BM_SP_2$Metacluster,
+                                     levels = meta_levels_neut)
+
+# Quick sanity check
+table(sce_BL_BM_SP_2$Metacluster, useNA = "ifany")
+
+```
+
+```{r}
+############################################################
+## 1. Subset neutrophil metaclusters of interest
+############################################################
+
+# Remove unwanted meta-clusters
+drop_metas <- c("Meta_2", "Meta_3", "Meta_4", "Meta_8", "Meta_10")
+
+sce_clean <- sce_BL_BM_SP_2[, !sce_BL_BM_SP_2$Metacluster %in% drop_metas]
+
+# Make sure neutrophil_markers exists and are present
+neutrophil_markers <- c(
+  "MHC-II", "CD29", "LY6C", "SiglecF", "CD114", "Ly6AE", "CD117", "CXCR2",
+  "CD49d", "CD16/32", "CD244", "CD14", "CD49e", "CD62L", "CD97", "CD11C",
+  "CD11B", "CD115", "CD34", "LY6G", "CD11A", "CXCR4", "CD24", "CD45",
+  "CD80", "CD86", "CD49f", "CD18", "CD54", "CD44"
+)
+
+available_markers <- intersect(neutrophil_markers, colnames(assay(sce_clean, "exprs")))
+missing_markers   <- setdiff(neutrophil_markers, available_markers)
+
+if (length(missing_markers) > 0) {
+  message("These neutrophil markers are not present and will be ignored: ",
+          paste(missing_markers, collapse = ", "))
+}
+
+
+############################################################
+## Metacluster (meta15) + spleen_enriched annotation
+############################################################
+
+# 1) Get SOM → meta15 mapping from CATALYST
+clusters <- as.data.frame(metadata(sce_clean)[["cluster_codes"]])
+head(clusters)
+# typically: som100, meta15, ...
+
+# Map som100 (cluster_id) to "Meta_<meta15>"
+cluster_map <- clusters |>
+  dplyr::transmute(
+    cluster_id  = som100,
+    Metacluster = paste0("Meta_", meta15)
+  )
+
+# 2) Create Metacluster column in sce_clean
+sce_clean$Metacluster <- cluster_map$Metacluster[
+  match(sce_clean$cluster_id, cluster_map$cluster_id)
+]
+
+# Order levels by numeric meta15
+meta_levels <- paste0("Meta_", sort(unique(clusters$meta15)))
+sce_clean$Metacluster <- factor(sce_clean$Metacluster, levels = meta_levels)
+
+table(sce_clean$Metacluster, useNA = "ifany")
+
+```
+
+#Figure 2A, D
+```{r}
+############################################################
+## Build data.frame for TSNE + metacluster + spleen_enriched plotting
+############################################################
+
+# Extract reduced dimensions safely
+tsne_mat <- reducedDim(sce_clean, "TSNE_clean")
+colnames(tsne_mat) <- c("TSNE1", "TSNE2")
+
+# Build data frame in a controlled way
+data <- data.frame(
+  TSNE1          = tsne_mat[,1],
+  TSNE2          = tsne_mat[,2],
+  Metacluster    = sce_clean$Metacluster,
+  Organ          = sce_clean$organ,
+  Condition      = sce_clean$condition,
+  Spleen_enriched = sce_clean$spleen_enriched
+)
+
+
+############################################################
+## Plot TSNE coloured by Metacluster
+############################################################
+
+# Ensure Metacluster is a factor with the right order
+data$Metacluster <- factor(
+  data$Metacluster,
+  levels = paste0("Meta_", 1:15)
+)
+
+# Define a safe named vector of colors
+meta_colors <- c(
+  "Meta_1"  = "lightgreen",
+  "Meta_2"  = "gray20",
+  "Meta_3"  = "lightblue",
+  "Meta_4"  = "brown3",
+  "Meta_5"  = "gray40",
+  "Meta_6"  = "gray60",
+  "Meta_7"  = "cadetblue3",
+  "Meta_8"  = "red4",
+  "Meta_9"  = "plum3",
+  "Meta_10" = "indianred",
+  "Meta_11" = "gray80",
+  "Meta_12" = "gray90",
+  "Meta_13" = "chocolate3",
+  "Meta_14" = "lightpink1",
+  "Meta_15" = "gray100"
+)
+
+# Optional safety check
+missing_cols <- setdiff(levels(data$Metacluster), names(meta_colors))
+if (length(missing_cols) > 0) {
+  warning("Missing colors for: ", paste(missing_cols, collapse = ", "))
+}
+
+set.seed(123456)
+
+ggplot(data, aes(x = TSNE1, y = TSNE2, colour = Metacluster)) +
+  geom_point(alpha = 0.7, size = 0.6) +
+  scale_color_manual(values = meta_colors) +
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text  = element_text(size = 9),
+    axis.text    = element_text(size = 10),
+    axis.title   = element_text(size = 12)
+  )
+
+# Ensure factors have expected ordering
+data$Spleen_enriched <- factor(data$Spleen_enriched,
+                               levels = c("Rest", "Spleen_enriched"))
+
+############################################################
+## Plot TSNE coloured by spleen_enriched
+############################################################
+
+set.seed(123456)
+
+ggplot(data, aes(x = TSNE1, y = TSNE2, colour = Spleen_enriched)) +
+  geom_point(alpha = 0.7, size = 0.6) +
+  scale_colour_manual(
+    values = c("Rest" = "lightgray", "Spleen_enriched" = "plum3")
+  ) +
+  facet_grid(Condition ~ Organ) +
+  theme_classic() +
+  theme(
+    strip.background = element_rect(fill = "white", color = NA),
+    strip.text       = element_text(size = 10, face = "bold"),
+    axis.title       = element_text(size = 12),
+    axis.text        = element_text(size = 10)
+  )
+
+```
+
+#Figure 2B
+```{r}
+############################################################
+## Stack bar: metacluster proportions by organ × condition
+############################################################
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Drop unused organ levels
+sce_clean$organ <- droplevels(sce_clean$organ)
+
+# Build a tidy summary of counts
+df_counts <- as.data.frame(colData(sce_clean)) %>%
+  select(Metacluster, organ, condition)
+
+# Make sure these are factors (with a clean set of levels)
+df_counts$Metacluster <- droplevels(df_counts$Metacluster)
+df_counts$organ       <- droplevels(df_counts$organ)
+df_counts$condition   <- droplevels(df_counts$condition)
+
+# Build the combined Condition label (BL_control, BM_CPM_AMD, etc.)
+df_counts <- df_counts %>%
+  mutate(
+    Organ_short = dplyr::recode(
+      organ,
+      "Blood"       = "BL",
+      "Bone Marrow" = "BM",
+      "Spleen"      = "SP"
+    ),
+    Condition_label = dplyr::recode(
+      condition,
+      "Control" = "control",
+      "AMD"     = "CPM_AMD"
+    ),
+    Condition_combined = paste0(Organ_short, "_", Condition_label)
+  )
+
+# Count cells per Metacluster × Condition_combined
+counts <- df_counts %>%
+  count(Metacluster, Condition_combined, name = "Values")
+
+# Ensure Metacluster factor order (your custom order)
+counts$Metacluster <- factor(
+  counts$Metacluster,
+  levels = c(
+    "Meta_1", "Meta_3", "Meta_7", "Meta_10", "Meta_14", "Meta_9", "Meta_13",
+    "Meta_4", "Meta_8", "Meta_2", "Meta_5", "Meta_6", "Meta_11", "Meta_12",
+    "Meta_15"
+  )
+)
+
+# Ensure Condition order
+counts$Condition_combined <- factor(
+  counts$Condition_combined,
+  levels = c(
+    "BL_control", "BM_control", "SP_control",
+    "BL_CPM_AMD", "BM_CPM_AMD", "SP_CPM_AMD"
+  )
+)
+
+# Same color mapping as before
+meta_colors <- c(
+  "Meta_1"  = "lightgreen",
+  "Meta_3"  = "lightblue",
+  "Meta_7"  = "cadetblue3",
+  "Meta_10" = "indianred",
+  "Meta_14" = "lightpink1",
+  "Meta_9"  = "plum3",
+  "Meta_13" = "chocolate3",
+  "Meta_4"  = "brown3",
+  "Meta_8"  = "red4",
+  "Meta_2"  = "gray20",
+  "Meta_5"  = "gray40",
+  "Meta_6"  = "gray60",
+  "Meta_11" = "gray80",
+  "Meta_12" = "gray90",
+  "Meta_15" = "gray100"
+)
+
+# Plot: position = "fill" makes it proportion
+ggplot(counts, aes(x = Condition_combined, y = Values, fill = Metacluster)) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_fill_manual(values = meta_colors) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 12)
+  ) +
+  ylab("Proportion of cells")
+
+```
+
+#Figure 2C
+```{r}
+############################################################
+## Helper: trim by quantiles (for plotting only)
+############################################################
+
+scale_by_quantile <- function(counts, lower = 0.01, upper = 0.99) {
+  if (!is.matrix(counts) && !is.data.frame(counts)) {
+    stop("counts must be a data.frame or matrix")
+  }
+  
+  class.in <- class(counts)[1]
+  
+  # early exit if no trimming
+  if (lower <= 0 && upper >= 1) {
+    return(as.matrix(counts))
+  }
+  
+  if (class.in == "data.frame") {
+    cnames <- colnames(counts)
+    counts <- as.matrix(counts)
+    colnames(counts) <- cnames
+  }
+  
+  if (upper < 1) {
+    qt.upper <- as.numeric(quantile(counts, upper, na.rm = TRUE))
+    counts[counts > qt.upper] <- qt.upper
+  }
+  
+  if (lower > 0) {
+    qt.lower <- as.numeric(quantile(counts, lower, na.rm = TRUE))
+    counts[counts < qt.lower] <- qt.lower
+  }
+  
+  if (class.in == "data.frame") {
+    counts <- data.frame(counts, check.names = FALSE)
+  }
+  
+  counts
+}
+
+```
+
+```{r}
+############################################################
+## Prepare pseudo-bulk by Grouping × Condition × Mouse
+############################################################
+
+library(dplyr)
+library(ComplexHeatmap)
+
+# Neutrophil markers (must be present as columns in exprs matrix)
+neutrophil_markers <- c(
+  "MHC-II", "CD29", "LY6C", "SiglecF", "CD114", "Ly6AE", "CD117", "CXCR2",
+  "CD49d", "CD16/32", "CD244", "CD14", "CD49e", "CD62L", "CD97", "CD11C",
+  "CD11B", "CD115", "CD34", "LY6G", "CD11A", "CXCR4", "CD24", "CD45",
+  "CD80", "CD86", "CD49f", "CD18", "CD54", "CD44"
+)
+
+# Expression matrix (cells x markers)
+p <- assay(sce_clean2, "exprs")
+
+# Check which markers are available
+available_markers <- intersect(neutrophil_markers, colnames(p))
+missing_markers   <- setdiff(neutrophil_markers, available_markers)
+if (length(missing_markers) > 0) {
+  message("Markers not found and will be ignored: ",
+          paste(missing_markers, collapse = ", "))
+}
+
+# Use only available markers
+p2 <- t(as.matrix(p[, available_markers, drop = FALSE]))  # now: samples x markers
+
+# Metadata (always as data.frame)
+cell_type_data <- data.frame(
+  Grouping  = sce_clean2$Biased_grouping,
+  Condition = sce_clean2$condition,
+  Mouse     = sce_clean2$mouse
+)
+
+# Join expression and metadata
+data <- cbind(p2, cell_type_data)
+
+# Order Grouping factor
+data$Grouping <- factor(
+  data$Grouping,
+  levels = c(
+    "Progenitor_BM", "Progenitor_SP",
+    "immNEU_BM", "immNEU_SP",
+    "matNEU_BM_BL", "matNEU_BL"
+  )
+)
+
+# Pseudo-bulk: mean expression per Grouping × Condition × Mouse
+result <- data %>%
+  group_by(Grouping, Condition, Mouse) %>%
+  summarise(across(all_of(available_markers), ~ mean(.x, na.rm = TRUE)),
+            .groups = "drop")
+
+# Order by Grouping (for nicer heatmap rows)
+result <- result[order(result$Grouping), ]
+
+# Separate expression matrix and metadata
+metadata <- result[, c("Grouping", "Condition", "Mouse")]
+matrix_data <- as.matrix(result[, available_markers])
+
+# Ensure rownames
+rownames(matrix_data) <- apply(metadata, 1, paste, collapse = "_")
+rownames(metadata)    <- rownames(matrix_data)
+
+############################################################
+## Scaling & trimming (for heatmap visualization)
+############################################################
+
+# Scale per marker (column-wise z-score)
+matrix_data_scaled <- scale(matrix_data)
+
+# Trim extreme values to 1st–99th percentile (for color range)
+matrix_data_scaled_trimmed <- scale_by_quantile(matrix_data_scaled,
+                                                lower = 0.01,
+                                                upper = 0.99)
+
+############################################################
+## Row annotations: Grouping & Condition
+############################################################
+
+row_df <- data.frame(
+  Cluster   = metadata$Grouping,
+  Condition = metadata$Condition
+)
+rownames(row_df) <- rownames(metadata)
+
+annot_colors <- list(
+  Cluster = c(
+    "Progenitor_BM"   = "lightgreen",
+    "Progenitor_SP"   = "lightpink1",
+    "immNEU_BM"       = "lightblue",
+    "immNEU_SP"       = "plum3",
+    "matNEU_BM_BL"    = "indianred",
+    "matNEU_BL"       = "brown3"
+  ),
+  Condition = c(
+    "Control" = "lightblue3",
+    "AMD"     = "#d7658b"
+  )
+)
+
+row_annot <- rowAnnotation(
+  df  = row_df,
+  col = annot_colors
+)
+
+
+############################################################
+## Column grouping by marker function
+############################################################
+
+# Reorder markers for plotting
+new_order <- c(
+  "CD45", "LY6G", "LY6C", "CD115", "SiglecF", "Ly6AE", "CD117", "CD34",    # lineage
+  "CD114", "CD16/32", "CXCR2", "CXCR4", "CD62L",                            # chemokine / activation
+  "CD11A", "CD11B", "CD18", "CD24", "CD29", "CD44", "CD49d", "CD49e",
+  "CD49f", "CD54", "CD97",                                                  # integrins
+  "MHC-II", "CD11C", "CD14", "CD244", "CD80", "CD86"                        # antigen / co-stim
+)
+
+# Keep only those present in the matrix
+new_order <- intersect(new_order, colnames(matrix_data_scaled_trimmed))
+
+matrix_data_scaled_trimmed <- matrix_data_scaled_trimmed[, new_order, drop = FALSE]
+
+Marker_split <- factor(
+  ifelse(
+    colnames(matrix_data_scaled_trimmed) %in%
+      c("CD45", "LY6G", "LY6C", "CD115", "SiglecF", "Ly6AE", "CD117", "CD34"),
+    "Lineage",
+    ifelse(
+      colnames(matrix_data_scaled_trimmed) %in%
+        c("CD114", "CD16/32", "CXCR2", "CXCR4", "CD62L"),
+      "Chemokine_receptor/activation",
+      ifelse(
+        colnames(matrix_data_scaled_trimmed) %in%
+          c("CD11A", "CD11B", "CD18", "CD24", "CD29", "CD44",
+            "CD49d", "CD49e", "CD49f", "CD54", "CD97"),
+        "Integrins",
+        "Antigen_presentation/Co-stimulation"
+      )
+    )
+  ),
+  levels = c(
+    "Lineage",
+    "Chemokine_receptor/activation",
+    "Integrins",
+    "Antigen_presentation/Co-stimulation"
+  )
+)
+
+############################################################
+## Final ComplexHeatmap plot
+############################################################
+
+ht <- Heatmap(
+  matrix_data_scaled_trimmed,
+  name            = "z-score",
+  right_annotation = row_annot,
+  cluster_rows    = FALSE,
+  cluster_columns = FALSE,
+  show_row_names  = FALSE,
+  column_split    = Marker_split,
+  col             = colorRampPalette(c(
+                      "#54bebe", "#76c8c8", "#98d1d1", "#badbdb",
+                      "#dedad2", "#e4bcad", "#df979e", "#d7658b",
+                      "#c80064"
+                    ))(100)
+)
+
+ht
+
+```
+
