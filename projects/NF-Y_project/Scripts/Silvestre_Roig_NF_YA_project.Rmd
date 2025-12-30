@@ -1,0 +1,4212 @@
+---
+title: "NF-YA Project"
+output:
+  html_document:
+    df_print: paged
+---
+
+#LOADING PACKAGES
+```{r}
+# Function to install packages if not already installed
+install_if_missing <- function(pkg) {
+  # Check if the package is installed from CRAN or Bioconductor
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    if (pkg %in% c("SingleCellExperiment", "DropletUtils", "scater", "scran", "edgeR", 
+                  "limma", "slingshot", "Seurat", "tradeSeq", "AUCell", "CiteFuse", 
+                  "celldex", "SingleR", "bluster", "mumosa", "batchelor", "HGNChelper", 
+                  "harmony", "dyno")) {
+      # Bioconductor packages
+      BiocManager::install(pkg)
+    } else {
+      # CRAN packages
+      install.packages(pkg)
+    }
+  }
+}
+
+# List of required packages
+packages <- c("SingleCellExperiment", "DropletUtils", "scater", "scran", "edgeR", 
+              "ggrepel", "EnhancedVolcano", "ggpubr", "VennDiagram", "RColorBrewer", 
+              "org.Mm.eg.db", "limma", "dplyr", "slingshot", "Seurat", "tradeSeq", 
+              "tidyverse", "tidymodels", "scales", "viridis", "Matrix", "gam", "destiny", 
+              "GSEABase", "AUCell", "CiteFuse", "celldex", "SingleR", "pheatmap", 
+              "ggvenn", "bluster", "mumosa", "batchelor", "HGNChelper", "harmony", 
+              "scplotter", "CreateGeneSignatures", "plotthis", "dyno")
+
+# Install missing packages
+for (pkg in packages) {
+  install_if_missing(pkg)
+}
+
+# Load all the packages
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(DropletUtils)
+  library(scater)
+  library(scran)
+  library(edgeR)
+  library(ggrepel)
+  library(EnhancedVolcano)
+  library(ggpubr)
+  library(VennDiagram)
+  library(RColorBrewer)
+  library(org.Mm.eg.db)
+  library(limma)
+  library(dplyr)
+  library(slingshot)
+  library(Seurat)
+  library(tradeSeq)
+  library(tidyverse)
+  library(tidymodels)
+  library(scales)
+  library(viridis)
+  library(Matrix)
+  library(gam)
+  library(destiny)
+  library(GSEABase)
+  library(AUCell)
+  library(CiteFuse)
+  library(celldex)
+  library(SingleR)
+  library(pheatmap)
+  library(ggvenn)
+  library(bluster)
+  library(mumosa)
+  library(batchelor)
+  library(HGNChelper)
+  library(harmony)
+  library(SingleR)
+  #library(scplotter)
+  library(CreateGeneSignatures)
+  library(plotthis)
+  library(dyno)
+  library(DelayedArray)
+  library("escape")
+  library(data.table)
+})
+
+```
+
+#LOADING FUNCTIONS
+```{r}
+
+## --- Helpers
+.read_tab <- function(path) {
+  # fread handles .gz and is fast; keep column types as strings
+  fread(path, header = FALSE, data.table = FALSE)
+}
+
+# genes/features can be 2 or 3 columns; use V2 as symbol if present, else V1
+.get_symbol <- function(genes_df) {
+  if ("V2" %in% colnames(genes_df)) as.character(genes_df$V2) else as.character(genes_df$V1)
+}
+
+# Generic 10x triplet loader (barcodes/genes(or features)/matrix)
+load_10x_triplet <- function(barcode_path, gene_path, matrix_path, dataset_name) {
+  barcodes <- .read_tab(barcode_path)
+  genes    <- .read_tab(gene_path)
+  mat      <- readMM(matrix_path)
+
+  # Row names = gene symbols (like your code), but also store gene_id & symbol
+  symbols  <- .get_symbol(genes)
+  stopifnot(length(symbols) == nrow(mat))
+  rownames(mat) <- symbols
+
+  # SCE
+  sce <- SingleCellExperiment(
+    assays  = list(counts = mat)
+  )
+
+  # Set safe, unique cell names (prefix w/ dataset to avoid cross-dataset clashes)
+  bc_vec <- as.character(barcodes[[1]])
+  stopifnot(length(bc_vec) == ncol(sce))
+  colnames(sce) <- paste0(dataset_name, "_", make.unique(bc_vec))
+
+  # Minimal clean rowData with IDs & symbols (don’t carry raw table)
+  rowData(sce) <- DataFrame(
+    gene_id    = as.character(genes$V1),
+    gene_symbol= symbols,
+    row.names  = symbols
+  )
+
+  # Minimal colData with the original barcode
+  colData(sce) <- DataFrame(
+    Barcode = bc_vec,
+    Dataset = dataset_name,
+    row.names = colnames(sce)
+  )
+
+  sce
+}
+
+```
+
+#LOADING PUBLISHED DATASETS
+```{r}
+## Cochain et al. (GSE97310)
+sce_11wks <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_11weeks_HFD/barcodes.tsv",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_11weeks_HFD/genes.tsv",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_11weeks_HFD/matrix.mtx",
+  dataset_name = "sce_11wks"
+)
+
+sce_20wks <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_20weeks_HFD/barcodes.tsv",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_20weeks_HFD/genes.tsv",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_20weeks_HFD/matrix.mtx",
+  dataset_name = "sce_20wks"
+)
+
+sce_control <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_healthy_aorta/barcodes.tsv",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_healthy_aorta/genes.tsv",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/10X_Matrices_CircRes2018/Cochain_2018_healthy_aorta/matrix.mtx",
+  dataset_name = "sce_control"
+)
+
+## Lin et al. (GSE123587) — gz files
+sce_GSE123587 <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/GSE123587_RAW/Progression/GSM3507490_progression_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/GSE123587_RAW/Progression/GSM3507490_progression_genes.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/GSE123587_RAW/Progression/GSM3507490_progression_matrix.mtx.gz",
+  dataset_name = "sce_GSE123587"
+)
+
+## Williams et al. (GSE154817)
+sce_GSE154817 <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/GSE154817_RAW/D21_HFD/GSM4680683_D21HFD_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/GSE154817_RAW/D21_HFD/GSM4680683_D21HFD_genes.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/GSE154817_RAW/D21_HFD/GSM4680683_D21HFD_matrix.mtx.gz",
+  dataset_name = "sce_GSE154817"
+)
+
+## Cyr et al. (GSE252243) — note *features.tsv.gz* (not genes.tsv.gz)
+sce_GSE252243 <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/GSE252243_RAW.gz/GSM7997955_WT_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/GSE252243_RAW.gz/GSM7997955_WT_features.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/GSE252243_RAW.gz/GSM7997955_WT_matrix.mtx.gz",
+  dataset_name = "sce_GSE252243"
+)
+
+## Kim et al. (GSE116240)
+sce_GSE116240_LDL_leuko <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/GSE116240_RAW/GSM3215435_ldlr_ko_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/GSE116240_RAW/GSM3215435_ldlr_ko_genes.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/GSE116240_RAW/GSM3215435_ldlr_ko_matrix.mtx.gz",
+  dataset_name = "sce_GSE116240_LDL_leuko"
+)
+
+sce_GSE116240_LDL_foam_cells <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/GSE116240_RAW/GSM3215436_total_foam_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/GSE116240_RAW/GSM3215436_total_foam_genes.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/GSE116240_RAW/GSM3215436_total_foam_matrix.mtx.gz",
+  dataset_name = "sce_GSE116240_LDL_foam_cells"
+)
+
+## GSM4981311 (single sample)
+sce_GSM4981311 <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/GSM4981311/barcodes.tsv",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/GSM4981311/GSM4981311_Control_features.tsv",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/GSM4981311/matrix.mtx",
+  dataset_name = "sce_GSM4981311"
+)
+
+## Amoros et al. (E-MTAB-15242) — two samples already in 10x triplets
+sce_Amoros_pool1 <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/E-MTAB-15242/Sample_pool1WT_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/E-MTAB-15242/Sample_pool1WT_features.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/E-MTAB-15242/Sample_pool1WT_matrix.mtx.gz",
+  dataset_name = "sce_Amoros_pool1WT"
+)
+sce_Amoros_pool5 <- load_10x_triplet(
+  barcode_path = "~/Dropbox/Backup_Work/Scripts/Databases/E-MTAB-15242/Sample_pool5WT_barcodes.tsv.gz",
+  gene_path    = "~/Dropbox/Backup_Work/Scripts/Databases/E-MTAB-15242/Sample_pool5WT_features.tsv.gz",
+  matrix_path  = "~/Dropbox/Backup_Work/Scripts/Databases/E-MTAB-15242/Sample_pool5WT_matrix.mtx.gz",
+  dataset_name = "sce_Amoros_pool5WT"
+)
+sce_Amoros_et_al <- cbind(sce_Amoros_pool1, sce_Amoros_pool5)
+colData(sce_Amoros_et_al)$Dataset <- "sce_Amoros_et_al"  # unify label
+
+```
+
+#LOADING OWN DATASET (SEE OTHER CODE TO OBTAIN THE OBJECT)
+```{r}
+filename <- file.choose()
+sce <- readRDS(filename)
+```
+
+#COMBINING ALL THE OBJECTS
+```{r}
+## =========================
+## Combine SCEs by gene SYMBOL (case-insensitive match, canonical-case output)
+## Preserves sce$Organ; others -> "Aorta"
+## =========================
+library(Matrix)
+library(S4Vectors)
+library(SingleCellExperiment)
+library(scuttle)
+library(scran)
+
+## ---------- 0) Put ALL your SCEs here ----------
+objs <- list(
+  sce_11wks                    = sce_11wks,
+  sce_20wks                    = sce_20wks,
+  sce_control                  = sce_control,
+  sce_GSE123587                = sce_GSE123587,
+  sce_GSE154817                = sce_GSE154817,
+  sce_GSE252243                = sce_GSE252243,
+  sce_GSE116240_LDL_leuko      = sce_GSE116240_LDL_leuko,
+  sce_GSE116240_LDL_foam_cells = sce_GSE116240_LDL_foam_cells,
+  sce_GSM4981311               = sce_GSM4981311,
+  sce_Amoros_et_al             = sce_Amoros_et_al,
+  sce                          = sce
+)
+
+## ---------- 1) Ensure colnames exist & are unique (prefix by dataset) ----------
+ensure_colnames <- function(x, dataset_name) {
+  cn <- colnames(x)
+  if (is.null(cn)) {
+    cd <- colData(x)
+    bc <- NULL
+    for (nm in c("barcode","Barcode","cell","cell_id","V1", colnames(cd))) {
+      if (nm %in% colnames(cd)) {
+        v <- cd[[nm]]
+        if ((is.character(v) || is.factor(v)) && length(v) == ncol(x) && all(!is.na(v))) {
+          bc <- as.character(v); break
+        }
+      }
+    }
+    if (is.null(bc)) bc <- paste0("cell", seq_len(ncol(x)))
+    cn <- bc
+  }
+  colnames(x) <- paste0(dataset_name, "_", make.unique(cn))
+  x
+}
+objs <- mapply(ensure_colnames, objs, names(objs), SIMPLIFY = FALSE)
+
+## ---------- 2) Helpers ----------
+get_symbols <- function(x) {
+  if (!is.null(rowData(x)$gene_symbol)) as.character(rowData(x)$gene_symbol) else rownames(x)
+}
+
+# collapse duplicated symbols per dataset (case-insensitive)
+# PRESERVES original colData; stores upper_key for alignment
+collapse_by_symbol <- function(x) {
+  stopifnot("counts" %in% assayNames(x))
+  sym   <- trimws(get_symbols(x))
+  sym_u <- toupper(sym)                 # key for grouping/overlap
+
+  # Per-dataset canonical-case map: most frequent original case per upper symbol
+  canon_map <- tapply(sym, sym_u, function(v) {
+    tab <- sort(table(v), decreasing = TRUE)
+    names(tab)[1]
+  })
+
+  M <- counts(x)                        # dgCMatrix expected
+  f <- factor(sym_u)
+  G <- sparse.model.matrix(~ 0 + f)     # rows=genes, cols=unique upper symbols
+  agg <- t(G) %*% M
+  rownames(agg) <- sub("^f", "", rownames(agg))  # = upper-case keys
+
+  y <- SingleCellExperiment(list(counts = agg))
+  # preserve original colData (same cells)
+  colData(y) <- colData(x)
+  colnames(y) <- colnames(x)
+  # keep upper keys for alignment; canonical renaming happens later
+  rowData(y)$upper_key <- rownames(y)
+
+  list(sce = y, map = canon_map)
+}
+
+## ---------- 3) Collapse each dataset & collect their maps ----------
+collapsed <- lapply(objs, collapse_by_symbol)
+objs_sym  <- lapply(collapsed, `[[`, "sce")
+maps      <- lapply(collapsed, `[[`, "map")   # list of named vectors: UPPER -> CanonicalOriginal
+
+## ---------- 4) Intersect on upper-case keys (case-insensitive) ----------
+common_upper <- Reduce(intersect, lapply(objs_sym, rownames))
+cat("Common symbols (case-insensitive):", length(common_upper), "\n")
+if (length(common_upper) == 0) stop("No common symbols. Check species/build mismatches.")
+
+## ---------- 5) Build a global canonical symbol for each common upper key ----------
+# Prefer most frequent canonical across datasets; if tie, take the first
+canonical_by_upper <- vapply(common_upper, function(u) {
+  candidates <- unlist(lapply(maps, function(mp) mp[[u]]), use.names = FALSE)
+  candidates <- candidates[!is.na(candidates)]
+  if (length(candidates) == 0) return(u)  # rare fallback
+  tab <- sort(table(candidates), decreasing = TRUE)
+  names(tab)[1]
+}, character(1))
+names(canonical_by_upper) <- common_upper
+
+## ---------- 6) Subset and rename rows; set metadata (preserve sce$Organ) ----------
+prep_one <- function(x, cond_name, organ_default = "Aorta") {
+  # x rows are upper-case keys; subset to common
+  x <- x[common_upper, , drop = FALSE]
+  assays(x) <- assays(x)["counts"]
+  reducedDims(x) <- SimpleList()
+
+  # Rename rows to canonical original-case symbols
+  new_names <- canonical_by_upper[rownames(x)]
+  rownames(x) <- new_names
+  rowData(x)$gene_symbol <- rownames(x)
+
+  # Build metadata: keep existing Organ only for 'sce'; others -> "Aorta"
+  nc <- ncol(x)
+  cd_df <- as.data.frame(colData(x))
+  keep_sce_organ <- identical(cond_name, "sce") &&
+                    ("Organ" %in% names(cd_df)) &&
+                    length(cd_df$Organ) == nc &&
+                    !all(is.na(cd_df$Organ))
+
+  organ_vec <- if (keep_sce_organ) as.character(cd_df$Organ) else rep(organ_default, nc)
+
+  colData(x) <- S4Vectors::DataFrame(
+    cd_df,                              # keep all existing columns
+    Condition = rep(cond_name, nc),
+    Organ     = organ_vec,
+    row.names = colnames(x)
+  )
+
+  # Optional: enforce factor levels for Organ
+  colData(x)$Organ <- factor(
+    colData(x)$Organ,
+    levels = c("Blood","Bone_marrow","Spleen","Liver_perfusate","Lung_perfusate","Aorta")
+  )
+  x
+}
+
+objs_ready <- mapply(prep_one, objs_sym, names(objs_sym), SIMPLIFY = FALSE)
+
+## ---------- 6.5) Harmonize colData columns across all objects ----------
+# Union of all colData column names
+all_cd_cols <- Reduce(union, lapply(objs_ready, function(x) colnames(colData(x))))
+# Preferred order: all others (sorted) then Condition, Organ
+cd_order <- c(setdiff(sort(all_cd_cols), c("Condition","Organ")), "Condition","Organ")
+
+harmonize_coldata <- function(x, col_order) {
+  cd <- as.data.frame(colData(x))
+  if (length(cd)) {
+    cd[] <- lapply(cd, function(v) if (is.factor(v)) as.character(v) else v)
+  }
+  missing <- setdiff(col_order, names(cd))
+  for (nm in missing) cd[[nm]] <- NA_character_
+  cd <- cd[, col_order, drop = FALSE]
+  colData(x) <- S4Vectors::DataFrame(cd, row.names = colnames(x))
+  x
+}
+objs_ready <- lapply(objs_ready, harmonize_coldata, col_order = cd_order)
+
+## ---------- 7) Combine ----------
+combined_sce <- do.call(cbind, objs_ready)
+
+## ---------- 7.5) Diagnostics ----------
+cat("Combined dimensions: genes =", nrow(combined_sce), " cells =", ncol(combined_sce), "\n")
+print(head(rownames(combined_sce), 10))
+print(table(colData(combined_sce)$Condition))
+print(table(colData(combined_sce)$Organ, useNA = "ifany"))
+stopifnot(identical(colnames(colData(combined_sce)), cd_order))
+
+## ---------- 8) QC + normalization + HVGs ----------
+keep <- rowSums(counts(combined_sce)) > 0
+combined_sce <- combined_sce[keep, , drop = FALSE]
+```
+
+#NORMALIZATION
+```{r}
+##############################################
+#NORMALIZATION
+#LIBRARY SIZE NORMALIZATION
+set.seed(100)
+combined_sce<- logNormCounts(combined_sce)
+
+#PER-GENE VARIATION
+dec.sce <- modelGeneVar(combined_sce)
+chosen <- getTopHVGs(dec.sce, prop=1)
+str(chosen)
+
+#############################################
+#DIMENSIONALITY REDUCTION: PCA Analysis
+set.seed(1458847) 
+combined_sce <- runPCA(combined_sce, subset_row = chosen, name = "PCA_HVGs") 
+percent.var <- attr(reducedDim(combined_sce, 'PCA_HVGs'), 'percentVar')
+cat("Percentage of variance explained by top PCs:", percent.var, "\n")
+
+############################################
+# RUN HARMONY TO REMOVE BATCH EFFECTS
+set.seed(12345)
+reducedDim(combined_sce, 'PCA_HVGs_corr') <- HarmonyMatrix(reducedDim(combined_sce, 'PCA_HVGs'), meta_data = colData(combined_sce), vars_use = 'Condition')
+
+############################################
+# RUN UMAPs
+set.seed(20398) 
+combined_sce <- runUMAP(combined_sce, n_dimred = 10, dimred = 'PCA_HVGs', name = "UMAP_1") #BEFORE BATCH CORRECTION
+#HARMONY BATCH CORRECTION
+set.seed(20398) 
+combined_sce <- runUMAP(combined_sce, n_dimred = 10, dimred = 'PCA_HVGs_corr', name = "UMAP_corrected_mouse")#AFTER 
+
+############################################
+# CLUSTERING
+set.seed(20300)
+# Building SNN graph and clustering with Louvain algorithm
+sce.g <- buildSNNGraph(combined_sce, k = 30, use.dimred = 'PCA_HVGs_corr')
+sce.louvain <- igraph::cluster_louvain(sce.g)$membership
+colLabels(combined_sce) <- factor(sce.louvain)
+```
+
+#CELL ANNOTATION
+```{r}
+ref<- ImmGenData()
+set.seed(20300)
+pred <- SingleR(test=combined_sce, ref=ref, labels=ref$label.main)
+tab <- table(Assigned=pred$pruned.labels, Cluster=colLabels(combined_sce))
+pheatmap(log2(tab+10), color=colorRampPalette(c("white", "blue"))(101))
+```
+
+
+```{r}
+# Annotate cells based on label correspondence
+label_annotations <- c(
+  '5' = 'DC', 
+  '6' = 'Macrophage', '1' = 'Macrophage', '9' = 'Macrophage',
+  '2' = 'Monocyte',
+  
+  '4' = 'T_cell',
+  '7' = 'gamma_delta_T_cell',
+  
+  '3' = 'Basophils',
+  '17' = 'Eosinophils',
+  
+  '12' = 'Fibroblast','13' = 'Fibroblast',  '14' = 'Fibroblast',  '15' = 'Fibroblast',
+  
+  '10' = 'B_cell',
+  
+  '16' = 'Endothelial_cell',
+  
+  '11' = 'Neutrophil', 
+  '8' = 'Neutrophil' 
+)
+combined_sce$cell_type <- factor(label_annotations[as.character(combined_sce$label)], levels = unique(label_annotations))
+```
+
+#QUALITY CONTOL
+```{r}
+# Retrieving the mitochondrial transcripts and ERCC spike-in transcripts using genomic locations included in
+# the row-level annotation for the SingleCellExperiment.
+is.mito <- grep("^mt-", rowData(combined_sce)$Symbol)
+is.spike <- grepl("^ERCC", rownames(combined_sce))
+
+# Calculate per-cell QC metrics for the total data
+df <- perCellQCMetrics(combined_sce, subsets = list(mito = is.mito, ERCC = is.spike))
+
+# Alternatively, add QC metrics to the total_data object
+total_data <- addPerCellQC(combined_sce, subsets = list(mito = is.mito, ERCC = is.spike))
+
+# Identifying low-quality cells
+# Identifying outliers for various QC metrics using median absolute deviation (MAD)
+qc.lib2 <- isOutlier(df$sum, log = TRUE, type = "lower")
+qc.nexprs2 <- isOutlier(df$detected, log = TRUE, type = "lower")
+qc.spike2 <- isOutlier(df$subsets_ERCC_percent, type = "higher")
+qc.mito2 <- isOutlier(df$subsets_mito_percent, type = "higher")
+qc.mito_5percent <- df$subsets_mito_percent > 5
+
+# Printing the thresholds for reference
+attr(qc.lib2, "thresholds")
+attr(qc.nexprs2, "thresholds")
+attr(qc.spike2, "thresholds")
+attr(qc.mito2, "thresholds")
+```
+
+
+```{r}
+# Removing low-quality cells based on QC metrics
+discard <- qc.lib2 | qc.nexprs2 | qc.mito_5percent
+
+DataFrame(LibSize=sum(qc.lib2), NExprs=sum(qc.nexprs2), SpikeProp=sum(qc.spike2), MitoProp=sum(qc.mito_5percent), Total=sum(discard))
+
+# Subsetting the total_data object to remove low-quality cells
+filtered <- combined_sce[, !discard]
+```
+
+#EXAMINING GENE-LEVEL EXPESSION METRICS
+INSPECTING THE MOST HIGHLY EXPRESSED GENES
+```{r}
+# EXAMINING GENE-LEVEL EXPRESSION METRICS
+# INSPECTING THE MOST HIGHLY EXPRESSED GENES
+
+# Removing genes that are not expressed by any cell
+keep_feature <- nexprs(filtered, byrow=TRUE) > 0
+filtered <- filtered[keep_feature, ]
+dim(filtered)
+
+# Filtering out low-abundance genes
+ave.counts <- calculateAverage(filtered)
+hist(log10(ave.counts), breaks=100, main="", col="grey80", 
+     xlab=expression(Log[10]~"average count"))
+
+demo.keep <- ave.counts >= 0.00001
+filtered <- filtered[demo.keep, ]
+dim(filtered)
+
+# Examining the number of cells that express each gene
+num.cells <- nexprs(filtered, byrow=TRUE)
+hist(log10(num.cells), breaks=100, main="", col="grey80", 
+     xlab=expression(Log[10]~"number of cells"))
+
+# Further filtering to keep genes expressed in more than 5 cells
+to.keep <- num.cells > 5
+filtered <- filtered[to.keep, ]
+dim(filtered)
+
+combined_sce<- filtered
+```
+
+#Saving object annotated
+  ##Contains everything 
+```{r}
+setwd("~/Dropbox/Backup_Work/Scripts/11_scRNA_atherosclerosis_NFYA/02_Objects")
+saveRDS(combined_sce, file = "combined_sce.rds.gz")
+```
+
+##Plotting subunits across cell_types
+###Figure S1E
+```{r}
+############################################################
+## NFYA / NFYB / NFYC expression in Aorta – all cell types
+## Ordered: Myeloid → Lymphoid → Stromal
+############################################################
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+## Gene colors
+nfya_colors <- c(
+  "Nfya" = "#b5361c",
+  "Nfyb" = "#1c9d7c",
+  "Nfyc" = "#3a507f"
+)
+
+## Genes of interest
+genes_use <- c("Nfya", "Nfyb", "Nfyc")
+
+## Desired cell-type order
+celltype_order <- c(
+  # Myeloid
+  "Neutrophil",
+  "Monocyte",
+  "Macrophage",
+  "DC",
+  "Eosinophils",
+  "Basophils",
+  # Lymphoid
+  "T_cell",
+  "gamma_delta_T_cell",
+  "B_cell",
+  # Stromal
+  "Endothelial_cell",
+  "Fibroblast"
+)
+
+## Extract expression (logcounts)
+expr_mat <- assay(combined_sce, "logcounts")[genes_use, , drop = FALSE]
+
+## Build plotting dataframe (Aorta only)
+df_plot <- as.data.frame(t(expr_mat)) %>%
+  mutate(
+    cell_type = combined_sce$cell_type,
+    Organ     = combined_sce$Organ
+  ) %>%
+  filter(
+    Organ == "Aorta",
+    cell_type %in% celltype_order
+  ) %>%
+  pivot_longer(
+    cols = all_of(genes_use),
+    names_to  = "Gene",
+    values_to = "Expression"
+  )
+
+## Enforce factor ordering
+df_plot$Gene <- factor(df_plot$Gene, levels = genes_use)
+df_plot$cell_type <- factor(df_plot$cell_type, levels = celltype_order)
+
+## Violin plot
+p <- ggplot(
+  df_plot,
+  aes(x = cell_type, y = Expression, fill = Gene)
+) +
+  geom_violin(
+    trim  = FALSE,
+    scale = "width",
+    alpha = 0.8,
+    color = "black"
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.size = 0.3,
+    alpha = 0.9,
+    position = position_dodge(width = 0.9)
+  ) +
+  scale_fill_manual(values = nfya_colors) +
+  facet_wrap(~ Gene, nrow = 1, scales = "free_y") +
+  labs(
+    x = NULL,
+    y = "Expression (logcounts)",
+    title = "NFYA complex expression across Aorta cell types"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(size = 12, angle = 35, hjust = 1),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 14, face = "bold"),
+    legend.position = "none"
+  )
+
+print(p)
+
+```
+
+###Figure S1F
+```{r}
+############################################################
+## Collapsed NFY complex (Nfya+Nfyb+Nfyc) in Aorta cell types
+############################################################
+
+library(dplyr)
+library(ggplot2)
+
+## Desired cell-type order
+celltype_order <- c(
+  # Myeloid
+  "Neutrophil", "Monocyte", "Macrophage", "DC", "Eosinophils", "Basophils",
+  # Lymphoid
+  "T_cell", "gamma_delta_T_cell", "B_cell",
+  # Stromal
+  "Endothelial_cell", "Fibroblast"
+)
+
+genes_use <- c("Nfya", "Nfyb", "Nfyc")
+
+## Extract expression (logcounts)
+expr_mat <- assay(combined_sce, "logcounts")[genes_use, , drop = FALSE]
+
+## Build per-cell NFY complex score
+df_nfy <- data.frame(
+  cell_type = combined_sce$cell_type,
+  Organ     = combined_sce$Organ,
+  Nfya      = as.numeric(expr_mat["Nfya", ]),
+  Nfyb      = as.numeric(expr_mat["Nfyb", ]),
+  Nfyc      = as.numeric(expr_mat["Nfyc", ])
+) %>%
+  filter(
+    Organ == "Aorta",
+    cell_type %in% celltype_order
+  ) %>%
+  mutate(
+    cell_type = factor(cell_type, levels = celltype_order),
+    # Collapse option A (recommended): mean of logcounts
+    NFY_complex = rowMeans(cbind(Nfya, Nfyb, Nfyc), na.rm = TRUE)
+    # Collapse option B: sum of logcounts (uncomment if you prefer)
+    # NFY_complex = Nfya + Nfyb + Nfyc
+  )
+
+## Plot
+p <- ggplot(df_nfy, aes(x = cell_type, y = NFY_complex)) +
+  geom_violin(trim = FALSE, scale = "width", alpha = 0.85, color = "black", fill = "grey80") +
+  geom_boxplot(width = 0.15, outlier.size = 0.3, alpha = 0.95, color = "black") +
+  labs(
+    x = NULL,
+    y = "NFY complex score (mean logcounts of Nfya/Nfyb/Nfyc)",
+    title = "Collapsed NFY complex expression across Aorta cell types"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(size = 12, angle = 35, hjust = 1),
+    axis.text.y  = element_text(size = 12),
+    axis.title.y = element_text(size = 14)
+  )
+
+print(p)
+
+```
+
+#SUBSETTING NEUTROPHILS
+```{r}
+sce_Neutro<- combined_sce[, combined_sce$cell_type == "Neutrophil" & combined_sce$Organ == "Aorta"]
+```
+
+#Normalizing, dimensionality reduction, clustering
+```{r}
+##############################################
+#NORMALIZATION
+#LIBRARY SIZE NORMALIZATION
+set.seed(100)
+sce_Neutro<- logNormCounts(sce_Neutro)
+#convert to a seurat object if needed
+#seurat_obj <- as.Seurat(sce_filtered, counts = "counts", data = "logcounts")
+
+#PER-GENE VARIATION
+dec.sce <- modelGeneVar(sce_Neutro)
+chosen <- getTopHVGs(dec.sce, prop=1)
+str(chosen)
+
+#############################################
+#DIMENSIONALITY REDUCTION: PCA Analysis
+set.seed(1458847) 
+sce_Neutro <- runPCA(sce_Neutro, subset_row = chosen, name = "PCA_HVGs") 
+percent.var <- attr(reducedDim(sce_Neutro, 'PCA_HVGs'), 'percentVar')
+cat("Percentage of variance explained by top PCs:", percent.var, "\n")
+
+############################################
+# RUN HARMONY TO REMOVE BATCH EFFECTS
+set.seed(12345)
+reducedDim(sce_Neutro, 'PCA_HVGs_corr') <- HarmonyMatrix(reducedDim(sce_Neutro, 'PCA_HVGs'), meta_data = colData(sce_Neutro), vars_use = 'Condition')
+
+############################################
+# RUN UMAPs
+set.seed(20398) 
+sce_Neutro <- runUMAP(sce_Neutro, n_dimred = 10, dimred = 'PCA_HVGs', name = "UMAP_1") #BEFORE BATCH CORRECTION
+#HARMONY BATCH CORRECTION
+set.seed(20398) 
+sce_Neutro <- runUMAP(sce_Neutro, n_dimred = 10, dimred = 'PCA_HVGs_corr', name = "UMAP_corrected_mouse")#AFTER 
+
+############################################
+# CLUSTERING
+set.seed(20300)
+# Building SNN graph and clustering with Louvain algorithm
+sce.g <- buildSNNGraph(sce_Neutro, k = 30, use.dimred = 'PCA_HVGs_corr')
+sce.louvain <- igraph::cluster_louvain(sce.g)$membership
+colLabels(sce_Neutro) <- factor(sce.louvain)
+```
+
+#To define color palette
+```{r}
+# Define new cell types and corresponding color palette
+labels <- c("2", "3", "4", "1")
+color_palette <- c(
+  "#dd5129" ,  # for cell type "2"
+  "#0f7ba2",  # for cell type "3"
+  '#43b284',   # for cell type "4"
+  "#fab255" # for cell type "1"
+)
+# Define custom order for new cell types
+custom_order <- c("2", "3", "4", "1")
+```
+
+##plot UMAP with defined colours
+##Figure 2A
+```{r}
+# Create a data frame with UMAP coordinates and the cell labels
+umap_data <- data.frame(
+  umap_1 = reducedDim(sce_Neutro, "UMAP_corrected_mouse")[, 1],
+  umap_2 = reducedDim(sce_Neutro, "UMAP_corrected_mouse")[, 2],
+  label = sce_Neutro$label
+)
+
+# Ensure the labels follow the custom order
+umap_data$label <- factor(umap_data$label, levels = custom_order)
+
+# Calculate the center (median) of each cluster
+cluster_centers <- umap_data %>%
+  group_by(label) %>%
+  summarize(
+    center_umap1 = median(umap_1, na.rm = TRUE),
+    center_umap2 = median(umap_2, na.rm = TRUE)
+  )
+
+# Create the UMAP plot with the custom color palette
+umap_plot <- ggplot(umap_data, aes(x = umap_1, y = umap_2, color = label)) +
+  geom_point(size = 2, alpha = 0.5) +
+  scale_color_manual(values = color_palette) +
+  theme_classic(base_size = 16) +
+  labs(title = "UMAP by Cell Label", x = "UMAP 1", y = "UMAP 2") +
+  theme(
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 14)
+  )
+
+# Add cluster center labels with a white box, black text, and connecting segment
+umap_plot +
+  geom_label_repel(
+    data = cluster_centers,
+    aes(x = center_umap1, y = center_umap2, label = label),
+    fill = "white",
+    color = "black",
+    segment.color = "black",
+    size = 6,
+    box.padding = unit(0.5, "lines"),
+    point.padding = unit(0.5, "lines")
+  )
+
+```
+
+##Plotting Nfya in clusters
+##Figure 2C
+```{r}
+library(ggplot2)
+library(extrafont)   # only if Arial is not available; optional
+
+# If Arial is installed on your system, this forces ggplot to use it:
+# extrafont::loadfonts(device = "win")  # Windows
+# extrafont::loadfonts(device = "pdf")  # Mac/Linux
+
+## 1. Define labels and colors
+labels    <- c("2", "3", "4", "1")
+color_palette <- c(
+  "2" = "#dd5129",  # label 2
+  "3" = "#0f7ba2",  # label 3
+  "4" = "#43b284",  # label 4
+  "1" = "#fab255"   # label 1
+)
+
+## 2. Make sure 'label' is a factor in the desired order
+sce_Neutro$label <- factor(sce_Neutro$label,
+                           levels = labels)
+
+## 3. Extract Nfya expression (use logcounts; change to "counts" if you prefer)
+nfya_expr <- as.numeric(assay(sce_Neutro, "logcounts")["Nfya", ])
+
+df <- data.frame(
+  label = sce_Neutro$label,
+  Nfya  = nfya_expr
+) %>%
+  filter(label %in% labels)
+
+ggplot(df, aes(y = label, x = Nfya, fill = label)) +
+  geom_violin(trim = FALSE, scale = "width", color = "black", alpha = 0.8) +
+  geom_boxplot(width = 0.15, outlier.size = 0.5, color = "black", alpha = 0.9) +
+  scale_fill_manual(values = color_palette[labels]) +
+  labs(
+    y = "Cluster",
+    x = "Nfya expression (logcounts)"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    text = element_text(family = "Helvetica"),   # <– EPS-safe font
+    axis.title.x = element_text(size = 18, family = "Helvetica"),
+    axis.title.y = element_text(size = 18, family = "Helvetica"),
+    axis.text.x  = element_text(size = 16, family = "Helvetica"),
+    axis.text.y  = element_text(size = 16, family = "Helvetica"),
+    legend.position = "none"
+  )
+```
+
+#Analysis of clusters and heatmap
+##compute percent expressed
+```{r}
+#/ per gene calculate the number of cells per Organ that express it
+get_pexpr <- function(data, group, threshold=0, digits=2){
+  
+  if(ncol(data)!=length(group)) stop("ncol(data) != length(group)")
+  if(!is.numeric(threshold) | threshold < 0) stop("threshold must be numeric and > 0")
+  
+  datar <- (data>threshold) * 1
+  a <- base::rowsum(x=t(datar), group=group)
+  b <- as.numeric(table(group)[rownames(a)])
+  f <- base::round(100*t(apply(a, 2, function(x) x/b)), digits=digits)
+  f
+}
+
+percent_expressed <- get_pexpr(data = assay(sce_Neutro), group = sce_Neutro$label)
+```
+
+##Subset genes that are expressed by at least 10% of the cells
+```{r}
+min_expression <- 10
+genes_to_use <- rownames(percent_expressed)[apply(percent_expressed, 1, function(row) all(row >= min_expression))]# considering a 5% OVER ALL GROUPS
+```
+
+##Creating a new summed object and DGEList object
+```{r}
+sce_Neutro.clean <- sce_Neutro[genes_to_use,]
+y <- DGEList(counts(sce_Neutro.clean), samples = colData(sce_Neutro.clean))
+
+# Normalization
+y <- calcNormFactors(y)
+design <- model.matrix(~0 + label, y$samples)
+colnames(design) <- gsub('label', '', colnames(design))
+colnames(design) <- paste0("label", colnames(design))
+y <- estimateDisp(y, design)
+
+# Fit model
+fit <- glmQLFit(y, design, robust = TRUE)
+```
+
+##Get DEGs, testing against a fold change
+```{r}
+# Updated contrasts with 17 labels as the 18 is too small
+contrasts <- makeContrasts(
+  label1_vs_label2 = label1 - label2,
+  label1_vs_label3 = label1 - label3,
+  label1_vs_label4 = label1 - label4,
+  label2_vs_label3 = label2 - label3,
+  label2_vs_label4 = label2 - label4,
+  label3_vs_label4 = label3 - label4,
+   levels = design
+)
+
+
+# Get DEGs, testing against a fold change:                  
+res <- sapply(colnames(contrasts), function(con){
+  tt<-topTags(glmTreat(fit,contrast=contrasts[,con], log2(1.5)),n=Inf)$table
+  return(data.frame(Gene=rownames(tt), tt))
+}, simplify = FALSE)
+
+# Rank the DEGs:
+ranked <- RankDEGs(res, delim="_vs_", signif.column="FDR", signif.threshold=0.05,
+                   effect.column="logFC", effect.threshold=0, gene.column="Gene",
+                   rnk.column="PValue", rnk.method="increasing")
+
+# Create signatures, keeping top 50 signature genes that separate the respective celltype from all other celltypes:
+signatures <- CreateGeneSignatures(ranked=ranked, keep.n=10, min.prop=1)
+
+# check number of genes:
+lengths(signatures)
+```
+
+##Heatmap: Figure 2B
+```{r}
+## 0) logCPM and z-scores ----------------------------------------
+
+# logCPM (log2 CPM + 1)
+logcpm <- log2(edgeR::cpm(y, log = FALSE) + 1)
+
+# z-score per gene (row-wise)
+logcpmZ <- t(scale(t(logcpm)))
+
+# optional: trim extreme values (5th–95th percentile) BEFORE clamping
+q <- quantile(logcpmZ, probs = c(0.05, 0.95), na.rm = TRUE)
+logcpmZ[logcpmZ > q[2]] <- q[2]
+logcpmZ[logcpmZ < q[1]] <- q[1]
+
+Metadata <- data.frame(label = y$samples$label)
+rownames(Metadata) <- colnames(logcpmZ)
+
+col_order <- order(Metadata$label)
+col_order <- rownames(Metadata)[col_order]
+
+## 1) Subset matrix for signatures + column order -----------------
+
+genes_use <- unique(unlist(signatures))
+Z <- logcpmZ[genes_use, col_order, drop = FALSE]
+
+# Clamp to ±1.5 for nicer contrast
+Z[Z >  1.5] <-  1.5
+Z[Z < -1.5] <- -1.5
+
+## 2) Colors ------------------------------------------------------
+
+col_fun <- circlize::colorRamp2(
+  c(-1.5, 0, 1.5),
+  c("#4575b4", "white", "#d73027")  # blue → white → red
+)
+
+## 3) Metadata / annotations -------------------------------------
+ha_top <- HeatmapAnnotation(
+  label = Metadata[col_order, "label"],
+  col   = list(label = setNames(color_palette, custom_order)),
+  annotation_legend_param = list(title = "Label")
+)
+
+## 4) Build heatmap object ----------------------------------------
+ht <- ComplexHeatmap::Heatmap(
+  matrix               = Z,
+  name                 = "z-score",
+  col                  = col_fun,
+  show_row_names       = TRUE,
+  show_column_names    = FALSE,
+  cluster_rows         = TRUE,
+  clustering_distance_rows = function(x)
+    as.dist(1 - cor(t(x), method = "spearman")),
+  clustering_method_rows   = "average",
+  cluster_columns      = FALSE,
+  top_annotation       = ha_top,
+  column_split         = Metadata[col_order, "label"],
+  use_raster           = FALSE,
+  row_names_gp         = grid::gpar(fontsize = 10),
+  heatmap_legend_param = list(
+    title  = "Expression (z)",
+    at     = c(-1.5, 0, 1.5),
+    labels = c("−1.5", "0", "+1.5")
+  )
+)
+
+## 5) Draw and export ---------------------------------------------
+# PNG (raster, high-res)
+ragg::agg_png("heatmap_clamped_blue_white_red.png",
+              width = 2400, height = 3000, res = 300)
+draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+dev.off()
+
+# PDF (vector)
+pdf("heatmap_clamped_blue_white_red.pdf", width = 9, height = 12)
+draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+dev.off()
+```
+
+#Analysis of NFYAhigh vs NFYAlow neutrophils
+```{r}
+############################################################
+## NFYA Q95-high vs NFYA-low signature analysis — FINAL VERSION
+############################################################
+
+############################################################
+## 1. Compute NFYA Q95 cutoff and assign groups
+############################################################
+
+expr <- as.numeric(assay(sce_Neutro, "logcounts")["Nfya", ])
+
+cutoff_q95 <- quantile(expr, 0.95, na.rm = TRUE)
+
+sce_Neutro$Nfya_q95 <- ifelse(expr >= cutoff_q95, "high", "low")
+sce_Neutro$Nfya_q95 <- factor(sce_Neutro$Nfya_q95, levels = c("low", "high"))
+
+meta <- as.data.frame(colData(sce_Neutro))
+
+message("NFYA_q95 group sizes:")
+print(table(meta$Nfya_q95))
+
+############################################################
+## 2. Identify signature score columns
+############################################################
+
+numeric_meta <- meta %>% select(where(is.numeric))
+
+qc_like <- c(
+  "sum", "sum.1",
+  "total", "total.1",
+  "nUMI",
+  "subsets_mito_sum", "subsets_mito_sum.1",
+  "subsets_mito_detected", "subsets_mito_detected.1",
+  "subsets_mito_percent", "subsets_mito_percent.1",
+  "subsets_ERCC_sum", "subsets_ERCC_sum.1",
+  "subsets_ERCC_detected", "subsets_ERCC_detected.1",
+  "subsets_ERCC_percent", "subsets_ERCC_percent.1"
+)
+
+qc_like <- intersect(qc_like, colnames(numeric_meta))
+
+signature_meta <- numeric_meta %>% select(-all_of(qc_like))
+signature_cols <- colnames(signature_meta)
+
+message("Signature columns detected: ", length(signature_cols))
+
+############################################################
+## 3. Remove cells with NA in ANY signature (once only)
+############################################################
+
+cells_keep <- rowSums(is.na(signature_meta)) == 0
+
+meta_clean <- meta[cells_keep, ]
+signature_clean <- signature_meta[cells_keep, ]
+
+message("Cells retained after filtering: ", nrow(meta_clean))
+
+message("NFYA_q95 distribution after filtering:")
+print(table(meta_clean$Nfya_q95))
+
+############################################################
+## 4. Output directory and results table
+############################################################
+
+all_tests <- tibble()
+
+output_dir <- "~/Dropbox/Backup_Work/Scripts/11_scRNA_atherosclerosis_NFYA/05_Signature_analysis/Nfya_q95"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+############################################################
+## 5. Loop through signature scores and test
+############################################################
+
+for (sc in signature_cols) {
+
+  df <- tibble(
+    Nfya_q95 = meta_clean$Nfya_q95,
+    value    = signature_clean[[sc]]
+  )
+
+  # Skip constant signatures
+  uniq_check <- df %>%
+    group_by(Nfya_q95) %>%
+    summarise(nuniq = n_distinct(value), .groups = "drop")
+
+  if (any(uniq_check$nuniq < 2)) {
+    message("Skipping ", sc, " — constant values")
+    next
+  }
+
+  stat <- tryCatch(
+    {
+      df %>% t_test(value ~ Nfya_q95, var.equal = FALSE)
+    },
+    error = function(e) {
+      message("Skipping ", sc, " — t-test failed: ", e$message)
+      return(NULL)
+    }
+  )
+
+  if (is.null(stat) || nrow(stat) == 0) next
+
+  means <- df %>%
+    group_by(Nfya_q95) %>%
+    summarise(mean_value = mean(value), .groups = "drop")
+
+  mean_low  <- means$mean_value[means$Nfya_q95 == "low"]
+  mean_high <- means$mean_value[means$Nfya_q95 == "high"]
+
+  y.pos <- max(df$value) * 1.05
+
+  stat <- stat %>%
+    mutate(
+      score       = sc,
+      mean_low    = mean_low,
+      mean_high   = mean_high,
+      effect_size = mean_high - mean_low,
+      y.position  = y.pos,
+      label       = paste0("p = ", signif(p, 2))
+    )
+
+  all_tests <- bind_rows(all_tests, stat)
+
+  p <- BoxPlot(
+      data = df,
+      x = "Nfya_q95",
+      y = "value",
+      add_violin = TRUE
+    ) +
+    labs(
+      title = sc,
+      x     = "NFYA (Q95 cutoff)",
+      y     = sc
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.2))) +
+    theme_classic(base_size = 14) +
+    stat_pvalue_manual(
+      stat,
+      xmin        = "group1",
+      xmax        = "group2",
+      label       = "label",
+      y.position  = "y.position",
+      tip.length  = 0.02,
+      bracket.size = 0.4,
+      inherit.aes  = FALSE
+    )
+
+  ggsave(
+    filename = file.path(output_dir, paste0("TT_NFYA_q95_", sc, ".png")),
+    plot     = p,
+    width    = 8, height = 6, dpi = 300
+  )
+}
+
+############################################################
+## 6. Save raw p-values and FDR-adjusted results
+############################################################
+
+write.csv(
+  all_tests,
+  file.path(output_dir, "NFYA_q95_signature_ttests_raw.csv"),
+  row.names = FALSE
+)
+
+if (nrow(all_tests) > 0) {
+  all_tests <- all_tests %>%
+    mutate(
+      p.adj = p.adjust(p, method = "BH"),
+      signif = case_when(
+        p.adj < 0.001 ~ "***",
+        p.adj < 0.01  ~ "**",
+        p.adj < 0.05  ~ "*",
+        TRUE          ~ "ns"
+      )
+    )
+
+  write.csv(
+    all_tests,
+    file.path(output_dir, "NFYA_q95_signature_ttests_withFDR.csv"),
+    row.names = FALSE
+  )
+}
+
+message("Done! NFYA_q95 signature analysis completed.")
+
+```
+
+##compute percent expressed
+```{r}
+#summed <- aggregateAcrossCells(sce_Macro, id = colData(sce_Macro)[, c("label")])
+
+#/ per gene calculate the number of cells per Organ that express it
+get_pexpr <- function(data, group, threshold=0, digits=2){
+  
+  if(ncol(data)!=length(group)) stop("ncol(data) != length(group)")
+  if(!is.numeric(threshold) | threshold < 0) stop("threshold must be numeric and > 0")
+  
+  datar <- (data>threshold) * 1
+  a <- base::rowsum(x=t(datar), group=group)
+  b <- as.numeric(table(group)[rownames(a)])
+  f <- base::round(100*t(apply(a, 2, function(x) x/b)), digits=digits)
+  f
+}
+
+#percent_expressed <- get_pexpr(data = assay(sce_Macrophage$Nfya_mix), group = sce_Macrophage$Nfya_mix)
+
+# Expression matrix (genes x cells)
+expr_mat <- assay(sce_Neutro, "logcounts")
+
+# Grouping: "high"/"low" from your mixture classification
+group_vec <- sce_Neutro$Nfya_q95   # or Nfya_manual
+
+percent_expressed <- get_pexpr(
+  data     = expr_mat,
+  group    = group_vec,
+  threshold = 0    # or e.g. 0.1 if you want stricter "expressed"
+)
+
+```
+
+##Subset genes that are expressed by at least 5 % of the cells
+```{r}
+min_expression <- 5
+genes_to_use <- rownames(percent_expressed)[apply(percent_expressed, 1, function(row) any(row >= min_expression))]
+```
+
+##Creating a new summed object and DGEList object
+```{r}
+sce_Neutro.clean <- sce_Neutro[genes_to_use,]
+y <- DGEList(counts(sce_Neutro.clean), samples = colData(sce_Neutro.clean))
+
+# Normalization
+y <- calcNormFactors(y)
+design <- model.matrix(~0 + Nfya_q95, y$samples)
+colnames(design) <- gsub('label', '', colnames(design))
+colnames(design) <- paste0("label", colnames(design))
+y <- estimateDisp(y, design)
+
+# Fit model
+fit <- glmQLFit(y, design, robust = TRUE)
+```
+
+##Get DEGs, testing against a fold change
+```{r}
+contrasts <- makeContrasts(
+  labelNFYAhigh_vs_labelNFYAlow = labelNfya_q95high - labelNfya_q95low,
+   levels = design
+)
+
+
+# Get DEGs, testing against a fold change:                  
+res <- sapply(colnames(contrasts), function(con){
+  tt<-topTags(glmTreat(fit,contrast=contrasts[,con], log2(1.5)),n=Inf)$table
+  return(data.frame(Gene=rownames(tt), tt))
+}, simplify = FALSE)
+
+# Rank the DEGs:
+ranked <- RankDEGs(res, delim="_vs_", signif.column="FDR", signif.threshold=0.1,
+                   effect.column="logFC", effect.threshold=0, gene.column="Gene",
+                   rnk.column="PValue", rnk.method="increasing")
+
+# Create signatures, keeping top 50 signature genes that separate the respective celltype from all other celltypes:
+signatures <- CreateGeneSignatures(ranked=ranked, keep.n=50, min.prop=0.8)
+
+# check number of genes:
+lengths(signatures)
+```
+
+```{r}
+data<- as.data.frame(res$labelNFYAhigh_vs_labelNFYAlow)
+```
+
+##Plotting Volcano
+##FIgure 2D
+```{r}
+# Load required libraries
+library(ggplot2)
+library(ggrepel)
+
+# Assume your DEG results are in a data frame called 'data'
+# Ensure that gene names are stored in a column "Gene" (or add them if missing)
+data$Gene <- rownames(data)
+
+# Exclude the gene "Nfya"
+data <- subset(data, Gene != "Nfya")
+
+# Compute the -log10(FDR) for the y-axis
+data$negLogFDR <- -log10(data$FDR)
+
+# Identify the top 5 genes with the highest logFC and the top 5 with the lowest logFC
+top5_high <- data[order(data$logFC, decreasing = TRUE), ][1:8, ]
+top5_low <- data[order(data$logFC, decreasing = FALSE), ][1:8, ]
+label_genes <- rbind(top5_high, top5_low)
+
+# Create flags for labeling and coloring
+data$label_gene <- ifelse(data$Gene %in% label_genes$Gene, data$Gene, "")
+data$colorGroup <- ifelse(data$Gene %in% label_genes$Gene, "highlight", "normal")
+
+# Define adjustable axis limits (change these values as needed)
+x_limits <- c(-10, 10)  # x-axis limits
+y_limits <- c(0, 10)  # y-axis limits
+
+# Define dot size and transparency
+dot_size <- 2.5     # Adjust dot size as needed
+dot_alpha <- 0.5  # Adjust dot transparency (alpha) as needed
+
+# Create the volcano plot using ggplot2 and geom_label_repel for labels in a white box with a black border
+volcano_plot <- ggplot(data, aes(x = logFC, y = negLogFDR, color = colorGroup)) +
+  geom_point(size = dot_size, alpha = dot_alpha) +
+  scale_color_manual(values = c("normal" = "grey", "highlight" = "red2")) +
+  geom_label_repel(aes(label = label_gene),
+                   size = 5,            # Larger label text
+                   fill = "white",      # White background for the label
+                   color = "black",     # Black text and border
+                   box.padding = 0.5,
+                   point.padding = 0.5,
+                   label.size = 0.5,    # Border thickness
+                   max.overlaps = Inf) +
+  labs(
+    x = "Log2FC",
+    y = "-Log10(FDR)"
+  ) +
+  scale_x_continuous(limits = x_limits) +
+  scale_y_continuous(limits = y_limits) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  )
+
+# Display the plot
+print(volcano_plot)
+```
+
+##GO analysis on NFYAhigh
+```{r}
+library(clusterProfiler)
+library(dplyr)
+library(org.Mm.eg.db)
+library(purrr)
+library(GOSemSim)
+
+setwd("~/Dropbox/Backup_Work/Scripts/11_scRNA_atherosclerosis_NFYA/04_Enrichment_analysis")
+
+############################################################
+## GO enrichment (BP) per contrast in `res` (robust version)
+############################################################
+
+go_list <- lapply(names(res), function(name) {
+  df <- res[[name]]
+  df <- as.data.frame(df)  # handle DFrame safely
+  
+  if (!all(c("Gene", "logFC", "FDR") %in% colnames(df))) {
+    warning("Contrast ", name, ": missing Gene/logFC/FDR columns. Skipping.")
+    return(NULL)
+  }
+  
+  # 1) Filter DE genes: upregulated, sig, excluding Nfya
+  selected_genes <- df %>%
+    filter(logFC > 0, FDR < 0.1, Gene != "Nfya") %>%
+    pull(Gene) %>%
+    unique() %>%
+    as.character()
+  
+  cat("\n=== Contrast:", name, "===\n")
+  cat("Selected genes (logFC>0, FDR<0.1, !=Nfya):", length(selected_genes), "\n")
+  
+  if (length(selected_genes) == 0) {
+    message("  -> No genes pass the filter in ", name, "; returning NULL.")
+    return(NULL)
+  }
+  
+  # 2) Map SYMBOL -> ENTREZID
+  gene_map <- bitr(
+    selected_genes,
+    fromType = "SYMBOL",
+    toType   = "ENTREZID",
+    OrgDb    = org.Mm.eg.db
+  )
+  
+  gene_ids <- unique(gene_map$ENTREZID)
+  cat("Mapped to ENTREZID:", length(gene_ids), "\n")
+  
+  if (length(gene_ids) == 0) {
+    message("  -> No SYMBOLs mapped to ENTREZID for ", name, "; returning NULL.")
+    return(NULL)
+  }
+  
+  # 3) Enrichment with ENTREZID
+  ego <- enrichGO(
+    gene          = gene_ids,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 1,       # don't filter by q internally
+    readable      = TRUE
+  )
+  
+  ego_df <- as.data.frame(ego)
+  cat("GO terms (raw):", nrow(ego_df), "\n")
+  
+  if (nrow(ego_df) == 0) {
+    message("  -> No GO BP terms enriched for ", name, "; returning NULL.")
+    return(NULL)
+  }
+  
+  # 4) Filter out very large terms if desired
+  ego_df <- ego_df %>% filter(Count <= 100)
+  cat("After Count <= 100:", nrow(ego_df), "terms\n")
+  
+  if (nrow(ego_df) == 0) {
+    message("  -> All terms too large for ", name, "; returning NULL.")
+    return(NULL)
+  }
+  
+  # Put filtered table back into enrichResult
+  ego@result <- ego_df
+  ego
+})
+
+names(go_list) <- names(res)
+
+############################################################
+## Summarise significant GO terms across all comparisons
+############################################################
+
+go_summary <- bind_rows(
+  lapply(names(go_list), function(name) {
+    ego <- go_list[[name]]
+    if (is.null(ego)) return(NULL)
+    
+    ego_df <- as.data.frame(ego)
+    
+    ego_df %>%
+      filter(qvalue < 0.05) %>%
+      mutate(Comparison = name) %>%
+      select(
+        Comparison,
+        ID,
+        Description,
+        p.adjust,
+        qvalue,
+        Count,
+        GeneRatio
+      )
+  })
+)
+
+cat("\nTotal enriched GO BP entries across all contrasts:",
+    nrow(go_summary), "\n")
+
+write.csv(go_summary, "GO_summary_significant.csv", row.names = FALSE)
+
+
+############################################################
+## Simplify GO terms using semantic similarity
+############################################################
+
+go_simple <- lapply(go_list, function(ego) {
+  if (is.null(ego)) return(NULL)
+  
+  clusterProfiler::simplify(
+    ego,
+    cutoff      = 0.7,    # typical range 0.5–0.7
+    by          = "p.adjust",
+    select_fun  = min,
+    measure     = "Wang"
+  )
+})
+
+# Pick a contrast that actually has enrichment
+valid_cmps <- names(go_simple)[!vapply(go_simple, is.null, logical(1))]
+if (length(valid_cmps) == 0) {
+  stop("No contrasts with enriched GO terms after simplify().")
+}
+
+target_cmp <- valid_cmps[1]  # or set this explicitly
+
+ego_simple <- go_simple[[target_cmp]]
+ego_simple_df <- as.data.frame(ego_simple)
+
+cat("Simplified GO terms for", target_cmp, ":", nrow(ego_simple_df), "\n")
+
+if (nrow(ego_simple_df) > 0) {
+  print(head(ego_simple_df[, c("Description", "p.adjust", "qvalue")], 15))
+  
+  dotplot(
+    ego_simple,
+    showCategory = 15,
+    font.size    = 16,
+    title        = paste("Simplified GO BP –", target_cmp)
+  )
+} else {
+  message("No GO terms to plot for comparison: ", target_cmp)
+}
+```
+
+#Selected GOs
+##Figure S2C
+```{r}
+### --- Plot only selected GO terms from ego_simple --- ###
+
+library(clusterProfiler)
+library(dplyr)
+
+# Convert enrichResult to a data.frame
+ego_df <- as.data.frame(ego_simple)
+
+# Define GO terms shown in your figure (exact spelling required)
+selected_terms <- c(
+  "nitric oxide biosynthetic process",
+  "acute inflammatory response",
+  "positive regulation of leukocyte cell-cell adhesion",
+  "cell chemotaxis",
+  "positive regulation of T cell differentiation",
+  "negative regulation of macrophage cytokine production"
+)
+
+# Subset GO table to selected terms
+ego_sub_df <- ego_df %>% 
+  filter(Description %in% selected_terms)
+
+# Rebuild a minimal enrichResult object using the selected terms
+ego_sub <- ego_simple
+ego_sub@result <- ego_sub_df
+
+# Plot only selected terms
+dotplot(
+  ego_sub,
+  showCategory = nrow(ego_sub_df),
+  font.size    = 12,
+  title        = "NFYA+ expressing neutrophils"
+)
+
+```
+
+##Upregulated in NFYA low
+```{r}
+library(clusterProfiler)
+library(dplyr)
+library(org.Mm.eg.db)
+library(purrr)
+
+setwd("~/Dropbox/Backup_Work/Scripts/11_scRNA_atherosclerosis_NFYA/04_Enrichment_analysis")
+
+############################################################
+## GO enrichment (BP) per contrast in `res`
+############################################################
+
+go_list <- lapply(res, function(df) {
+  # Filter DE genes: upregulated, significant, excluding Nfya
+  selected_genes <- df %>%
+    filter(logFC < 0, FDR < 0.1, Gene != "Nfya") %>%
+    pull(Gene) %>% 
+    as.character()
+  
+  if (length(selected_genes) == 0) {
+    return(NULL)
+  }
+  
+  ego <- enrichGO(
+    gene          = selected_genes,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+  
+  # If enrichment failed or empty, return NULL
+  if (is.null(ego) || nrow(as.data.frame(ego)) == 0) {
+    return(NULL)
+  }
+  
+  # Optionally filter out very large GO terms (e.g. > 100 genes)
+  ego_df <- as.data.frame(ego) %>%
+    filter(Count <= 100)    # adjust threshold as you like
+  
+  if (nrow(ego_df) == 0) {
+    return(NULL)
+  }
+  
+  # Rebuild an enrichResult object from filtered table
+  ego@result <- ego_df
+  ego
+})
+
+# Name the list elements by comparison if `res` is named
+if (!is.null(names(res))) {
+  names(go_list) <- names(res)
+}
+
+
+############################################################
+## Summarise significant GO terms across all comparisons
+############################################################
+
+go_summary <- bind_rows(
+  lapply(names(go_list), function(name) {
+    ego <- go_list[[name]]
+    if (is.null(ego)) return(NULL)
+    
+    ego_df <- as.data.frame(ego)
+    
+    ego_df %>%
+      filter(qvalue < 0.05) %>%
+      mutate(Comparison = name) %>%
+      select(
+        Comparison,
+        ID,
+        Description,
+        p.adjust,
+        qvalue,
+        Count,
+        GeneRatio
+      )
+  })
+)
+
+# Inspect and save
+head(go_summary)
+write.csv(go_summary, "GO_summary_significant.csv", row.names = FALSE)
+
+
+library(GOSemSim)
+
+############################################################
+## Simplify GO terms using semantic similarity
+############################################################
+
+go_simple <- lapply(go_list, function(ego) {
+  if (is.null(ego)) return(NULL)
+  
+  clusterProfiler::simplify(
+    ego,
+    cutoff      = 0.7,    # typical: 0.5–0.7
+    by          = "p.adjust",
+    select_fun  = min,
+    measure     = "Wang"
+  )
+})
+
+
+target_cmp <- names(go_simple)[1]  # or set explicitly
+
+ego_simple <- go_simple[[target_cmp]]
+
+if (!is.null(ego_simple) && nrow(as.data.frame(ego_simple)) > 0) {
+  cat("Simplified GO terms for", target_cmp, ":",
+      nrow(as.data.frame(ego_simple)), "\n")
+  
+  head(as.data.frame(ego_simple)[, c("Description", "p.adjust", "qvalue")], 15)
+  
+  dotplot(
+    ego_simple,
+    showCategory = 15,
+    font.size    = 12,
+    title        = paste("Simplified GO BP –", target_cmp)
+  )
+} else {
+  message("No GO terms to plot for comparison: ", target_cmp)
+}
+
+```
+
+```{r}
+## Ensure ego_simple exists for the selected comparison
+if (exists("ego_simple") &&
+    !is.null(ego_simple) &&
+    nrow(as.data.frame(ego_simple)) > 0) {
+  
+  # Convert to df
+  ego_df <- as.data.frame(ego_simple)
+  
+  # Filter significant terms (adjust threshold as needed)
+  sig_terms <- ego_df %>%
+    dplyr::filter(qvalue < 0.05) %>%
+    dplyr::select(ID, Description, p.adjust, qvalue, Count, GeneRatio) %>%
+    dplyr::arrange(p.adjust)
+  
+  # Print
+  cat("\n✔ Significant simplified GO terms for", target_cmp, ":\n")
+  print(sig_terms, row.names = FALSE)
+  
+  # Save
+  write.csv(sig_terms,
+            paste0("GO_simplified_significant_", target_cmp, ".csv"),
+            row.names = FALSE)
+  
+} else {
+  message("No simplified GO terms available for comparison: ", target_cmp)
+}
+
+
+
+```
+
+##Figure S2D
+```{r}
+library(dplyr)
+library(enrichplot)
+
+## 1. Define the GO terms you want to plot (must match Description exactly)
+selected_terms <- c(
+  "positive regulation of toll-like receptor 4 signaling pathway",
+  "antifungal humoral response",
+  "cellular response to interferon-alpha",
+  "positive regulation of NF-kappaB transcription factor activity",
+  "myeloid cell development"
+)
+
+## 2. Work from the simplified GO result for your chosen contrast
+ego_df <- as.data.frame(ego_simple)
+
+# Keep only selected terms
+ego_sel <- ego_df %>%
+  filter(Description %in% selected_terms)
+
+# If some terms are missing, warn
+missing_terms <- setdiff(selected_terms, ego_sel$Description)
+if (length(missing_terms) > 0) {
+  message("These terms were not found in ego_simple: ",
+          paste(missing_terms, collapse = "; "))
+}
+
+# Order Description factor in the order you gave
+ego_sel$Description <- factor(ego_sel$Description,
+                              levels = selected_terms)
+
+## 3. Rebuild an enrichResult object with only these terms
+ego_custom <- ego_simple
+ego_custom@result <- ego_sel
+
+## 4. Dotplot of the selected GO terms only
+dotplot(
+  ego_custom,
+  showCategory = nrow(ego_sel),
+  font.size    = 12,
+  title        = paste("Selected GO BP terms –", target_cmp)
+)
+
+```
+
+```{r}
+library(clusterProfiler)
+library(dplyr)
+library(org.Mm.eg.db)
+
+results_NFYA_low <- lapply(res, function(df) {
+  # Filter genes that are significantly overexpressed and exclude Nfya
+  selected_genes <- df %>% 
+    filter(logFC > 0, FDR < 0.1, Gene != "Nfya") %>%
+    select(Gene = Gene)  # Adjust this column name if needed
+
+  # Convert Gene vector to a character vector
+  genes_vector <- as.character(selected_genes$Gene)
+
+  # Perform GO enrichment analysis if there are any genes meeting the criteria
+  if (length(genes_vector) > 0) {
+    ego <- enrichGO(gene = genes_vector,
+                    OrgDb = org.Mm.eg.db,
+                    keyType = "SYMBOL",
+                    ont = "BP",
+                    pAdjustMethod = "BH",
+                    qvalueCutoff = 0.05,
+                    readable = TRUE)
+    
+    # If there are results, filter out GO terms with more than 100 genes
+    if (!is.null(ego) && nrow(ego@result) > 0) {
+      ego@result <- subset(ego@result, Count <= 100)
+    }
+    
+    return(ego)
+  } else {
+    return(NULL)  # Return NULL if no genes meet the criteria
+  }
+})
+
+
+```
+
+#Signature analysis
+##Creating Gene sets
+```{r}
+
+df<- as.data.frame(Gene_Sets_Complete_updated_2)
+
+# Create a list to store the GeneSet objects
+gene_sets <- list()
+
+# Iterate through each column in the data frame
+for (col_name in colnames(df)) {
+  # Remove NA values and ensure uniqueness
+  gene_values <- unique(na.omit(df[[col_name]]))
+  
+  # Create a GeneSet object for the column
+  gene_set <- GeneSet(gene_values, setName = col_name)
+  
+  # Store the GeneSet object in the list
+  gene_sets[[col_name]] <- gene_set
+}
+
+# Combine all GeneSet objects into a GeneSetCollection
+New_gene_signatures <- GeneSetCollection(gene_sets)
+
+```
+
+##Calculating signatures_Ucell
+```{r}
+# Define the maximum allowed size for a gene set
+max_genes <- 1500
+
+# Trim each gene set to max_genes if necessary
+trimmed_gene_sets <- GeneSetCollection(
+  lapply(New_gene_signatures, function(gene_set) {
+    trimmed_genes <- head(geneIds(gene_set), max_genes)  # Keep only the first max_genes
+    GeneSet(trimmed_genes, setName = setName(gene_set))
+  })
+)
+
+# Run ESCAPE with the trimmed gene sets
+sce_Neutro <- runEscape(
+    sce_Neutro, 
+    gene.sets = trimmed_gene_sets, 
+    method = "UCell",
+    groups = 1000, 
+    cores = 4, 
+    maxRank = 5000, 
+    min.size = NULL, 
+    new.assay.name = "Gene_Set_Collections"
+)
+```
+
+Adding signatures to columns
+```{r}
+#Extracting data 
+Gene_Set_Collections_columns<- as.data.frame(t(sce_Neutro@int_colData@listData[["altExps"]]@listData[["Gene_Set_Collections"]]@se@assays@data@listData[["Gene_Set_Collections"]]))
+
+sce_columns<-as.data.frame(colData(sce_Neutro))#extract from colData
+coldata_new<- cbind(sce_columns, Gene_Set_Collections_columns)#join colData
+coldata_new<- DataFrame(coldata_new)##ojo con esto
+
+colData(sce_Neutro)<- coldata_new #adding colData
+```
+
+##Analysis of significance in transcriptional signatures
+```{r}
+############################################################
+## Analysis of significance in transcriptional signatures
+############################################################
+
+## 0) Load required libraries
+library(dplyr)
+library(tidyr)
+library(plotthis)    # for BoxPlot()
+library(ggplot2)
+library(rstatix)     # for t_test()
+library(ggpubr)      # for stat_pvalue_manual()
+
+############################################################
+## 1) Extract metadata and define signature-score columns
+############################################################
+
+meta <- as.data.frame(colData(sce_Neutro))
+
+# Safety check: Nfya_manual must exist
+if (!"Nfya_manual" %in% colnames(meta)) {
+  stop("Column 'Nfya_manual' not found in colData(sce_Neutro). ",
+       "Please check the exact column name.")
+}
+
+# Make Nfya_manual a clean grouping factor
+# Handle possible types: logical, numeric 0/1, or character
+if (is.logical(meta$Nfya_manual)) {
+  meta$Nfya_manual <- factor(meta$Nfya_manual, levels = c(FALSE, TRUE))
+} else if (is.numeric(meta$Nfya_manual)) {
+  # assume 0 = low/negative, 1 = high/positive
+  meta$Nfya_manual <- ifelse(meta$Nfya_manual == 1, "high", "low")
+  meta$Nfya_manual <- factor(meta$Nfya_manual, levels = c("low", "high"))
+} else {
+  # character/factor: keep levels but ensure it's a factor
+  meta$Nfya_manual <- factor(meta$Nfya_manual)
+}
+
+message("Nfya_manual distribution:")
+print(table(meta$Nfya_manual))
+
+# --- choose signature columns robustly ---
+
+# 1) keep only numeric columns as candidates
+numeric_meta <- meta %>%
+  select(where(is.numeric))
+
+# 2) exclude obvious QC / technical covariates from numeric columns
+qc_like <- c(
+  "sum", "sum.1",
+  "total", "total.1",
+  "nUMI",
+  "subsets_mito_sum", "subsets_mito_sum.1",
+  "subsets_mito_detected", "subsets_mito_detected.1",
+  "subsets_mito_percent", "subsets_mito_percent.1",
+  "subsets_ERCC_sum", "subsets_ERCC_sum.1",
+  "subsets_ERCC_detected", "subsets_ERCC_detected.1",
+  "subsets_ERCC_percent", "subsets_ERCC_percent.1"
+)
+
+qc_like <- intersect(qc_like, colnames(numeric_meta))  # only those that exist
+
+signature_meta <- numeric_meta %>%
+  select(-all_of(qc_like))
+
+score_cols <- colnames(signature_meta)
+
+message("Will test ", length(score_cols), " signature columns:")
+print(score_cols)
+
+############################################################
+## 2) Prepare output container and directory
+############################################################
+
+all_ttests <- tibble()
+
+output_dir <- "~/Dropbox/Backup_Work/Scripts/11_scRNA_atherosclerosis_NFYA/05_Signature_analysis/Neutrophils"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+############################################################
+## 3) Loop over each signature and run t-test
+############################################################
+
+for (sc in score_cols) {
+  
+  # a) Subset to non-missing values for this signature
+  df <- meta %>%
+    filter(!is.na(.data[[sc]])) %>%
+    select(Nfya_manual, value = !!sym(sc))
+  
+  # If everything is NA, skip
+  if (nrow(df) == 0) {
+    message("Skipping ", sc, " — all values are NA")
+    next
+  }
+  
+  # Ensure grouping is a factor (re-apply to be safe)
+  df$Nfya_manual <- factor(df$Nfya_manual, levels = levels(meta$Nfya_manual))
+  
+  # b) Skip if only one NFYA level or too few cells
+  if (dplyr::n_distinct(df$Nfya_manual) < 2) {
+    message("Skipping ", sc, " — only one NFYA group present")
+    next
+  }
+  
+  if (nrow(df) < 10) {
+    message("Skipping ", sc, " — fewer than 10 cells with non-NA values")
+    next
+  }
+  
+  # c) Skip if values are constant in at least one NFYA group
+  group_var_check <- df %>%
+    group_by(Nfya_manual) %>%
+    summarise(
+      n_unique = n_distinct(value[!is.na(value)]),
+      .groups  = "drop"
+    )
+  
+  if (any(group_var_check$n_unique < 2)) {
+    message("Skipping ", sc, " — constant (or nearly constant) values in one NFYA group")
+    next
+  }
+  
+  # d) Run unpaired Welch’s t-test with tryCatch to catch edge cases
+  stat.test <- tryCatch(
+    {
+      df %>%
+        t_test(value ~ Nfya_manual, var.equal = FALSE)
+    },
+    error = function(e) {
+      message("Skipping ", sc, " — t-test failed: ", e$message)
+      return(NULL)
+    }
+  )
+  
+  # If t-test failed, skip this signature
+  if (is.null(stat.test) || nrow(stat.test) == 0) next
+  
+  # e) Precompute y-position for annotation from the original df
+  y.pos <- max(df$value, na.rm = TRUE) * 1.05
+  
+  stat.test <- stat.test %>%
+    mutate(
+      y.position = y.pos,
+      label      = paste0("p = ", signif(p, 2))
+    )
+  
+  # f) Store results, adding the score name
+  all_ttests <- bind_rows(
+    all_ttests,
+    stat.test %>% mutate(score = sc)
+  )
+  
+  # g) Build the box+violin plot
+  p <- BoxPlot(
+    data       = df,
+    x          = "Nfya_manual",
+    y          = "value",
+    add_violin = TRUE
+  ) +
+    labs(
+      title = sc,
+      x     = "NFYA (Nfya_manual groups)",
+      y     = sc
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.2))) +
+    theme_classic(base_size = 14) +
+    stat_pvalue_manual(
+      stat.test,
+      label       = "label",
+      xmin        = "group1",
+      xmax        = "group2",
+      y.position  = "y.position",
+      tip.length  = 0.02,
+      bracket.size = 0.3,
+      inherit.aes  = FALSE
+    )
+  
+  # h) Save the plot
+  ggsave(
+    filename = file.path(output_dir, paste0("TTEST_NFYA_manual_", sc, ".png")),
+    plot     = p,
+    width    = 8,
+    height   = 6,
+    units    = "in",
+    dpi      = 300
+  )
+}
+
+############################################################
+## 4) Write out all t-test results (raw p-values)
+############################################################
+
+write.csv(
+  all_ttests,
+  file.path(output_dir, "Signature_comparison_NFYA_manual.csv"),
+  row.names = FALSE
+)
+
+############################################################
+## 5) Add BH FDR and significance stars
+############################################################
+
+if (nrow(all_ttests) > 0) {
+  all_ttests <- all_ttests %>%
+    mutate(
+      p.adj = p.adjust(p, method = "BH"),
+      signif = case_when(
+        p.adj < 0.001 ~ "***",
+        p.adj < 0.01  ~ "**",
+        p.adj < 0.05  ~ "*",
+        TRUE          ~ "ns"
+      )
+    )
+  
+  write.csv(
+    all_ttests,
+    file.path(output_dir, "Signature_comparison_NFYA_manual_withFDR.csv"),
+    row.names = FALSE
+  )
+} else {
+  message("No successful t-tests; 'all_ttests' is empty.")
+}
+
+############################################################
+## END
+############################################################
+
+```
+
+#Plotting Circular Lollipop plot
+##Figure 2E
+##New_Circular_Loliplot
+```{r}
+## 0) Define Nfya_q95 groups (top 5% high)
+expr <- as.numeric(assay(sce_Neutro, "logcounts")["Nfya", ])
+cutoff_q95 <- quantile(expr, 0.95, na.rm = TRUE)
+
+sce_Neutro$Nfya_q95 <- ifelse(expr >= cutoff_q95, "high", "low")
+sce_Neutro$Nfya_q95 <- factor(sce_Neutro$Nfya_q95, levels = c("low", "high"))
+
+meta <- as.data.frame(colData(sce_Neutro))
+table(meta$Nfya_q95)
+
+## 1) Map scores to categories + pretty labels (using exact colData names)
+cat_map <- tibble::tribble(
+  ~score,                                                ~Category,    ~label,
+  # --- TFs ---
+  "Ikzf1",                                               "TF",         "Ikzf1",
+  "Irf1",                                                "TF",         "Irf1",
+  "Irf2",                                                "TF",         "Irf2",
+
+  # --- Function ---
+  "Nucleotide_signaling",                                "Function",   "Nucleotide signaling",
+  "Azurophil.granulesb..Cowland.and.Borregaard..2016.",  "Function",   "Azurophil granules",
+  "Inflammasome",                                        "Function",   "Inflammasome",
+  "TNF.receptor.signaling.pathway..316be05e.6196.11e5.8ac5.06603eb7f303.",
+                                                         "Function",   "TNF receptor signaling",
+  "KEGG_REGULATION_OF_AUTOPHAGY",                        "Function",   "Autophagy regulation",
+  "Chemokines",                                          "Function",   "Chemokines",
+  "Chemotactic.Receptors",                               "Function",   "Chemotactic receptors",
+  "Neutrophil.Maturation..Xie.et.al..Nat.Immunol.",      "Function",   "Neutrophil maturation",
+  "ROS.production..GO.1903409.",                         "Function",   "ROS production",
+  "Neutrophil.activation.GO.0042119.",                   "Function",   "Neutrophil activation",
+  "NETosis",                                             "Function",   "NETosis",
+  "Phagocytosis..GO.0006911.",                           "Function",   "Phagocytosis",
+
+  # --- Metabolism ---
+  "Glucagon.signaling.pathway..GO.0071377.",             "Metabolism", "Glucagon signaling",
+  "gluconeogenesis..GO.0006094.",                        "Metabolism", "Gluconeogenesis",
+  "glutamine.metabolic.process..GO.0006541.",            "Metabolism", "Glutamine metabolism",
+  "Oxidative.phosphorylation..GO.000619.",               "Metabolism", "Oxidative phosphorylation",
+  "pentose.phosphate.shunt..GO.0006098.",                "Metabolism", "Pentose phosphate"
+)
+
+## 2) Compute fold-change NFYA-high (Q95) / NFYA-low
+df_fc <- meta %>%
+  select(Nfya_q95, all_of(cat_map$score)) %>%
+  pivot_longer(
+    -Nfya_q95,
+    names_to  = "score",
+    values_to = "value"
+  ) %>%
+  filter(!is.na(value)) %>%
+  group_by(score, Nfya_q95) %>%
+  summarise(mean_val = mean(value), .groups = "drop") %>%
+  pivot_wider(
+    names_from  = Nfya_q95,        # -> "low", "high"
+    values_from = mean_val,
+    names_prefix = "Nfya_"         # -> "Nfya_low", "Nfya_high"
+  ) %>%
+  mutate(
+    fold_change = Nfya_high / Nfya_low
+  ) %>%
+  inner_join(cat_map, by = "score") %>%
+  mutate(
+    Category = factor(Category, levels = c("TF", "Function", "Metabolism"))
+  ) %>%
+  arrange(Category, fold_change) %>%
+  mutate(
+    label = factor(label, levels = label)
+  )
+
+## 3) Circular lollipop
+circ_plot <- ggplot(df_fc,
+                    aes(x = label, y = fold_change, colour = Category)) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey60") +
+  geom_segment(
+    aes(
+      xend = label,
+      y    = 1,
+      yend = fold_change,
+      colour = Category
+    ),
+    linewidth = 1
+  ) +
+  geom_point(size = 5) +
+  coord_polar(theta = "x", clip = "off") +
+  scale_colour_manual(
+    values = c(
+      "TF"         = "#6c5d9e",
+      "Metabolism" = "#e48171",
+      "Function"   = "#2b9b81"
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(
+      size   = 12,
+      face   = "plain",
+      margin = margin(t = 12)
+    ),
+    axis.text.y      = element_text(size = 9),
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom",
+    plot.margin      = margin(t = 10, r = 30, b = 10, l = 30)
+  )
+
+circ_plot
+```
+
+#Bone marrow and blood neutrophils
+```{r}
+#SUBSETTING NEUTROPHILS
+sce_Neutro_BM_BL<- combined_sce[, combined_sce$cell_type == "Neutrophil" & combined_sce$Organ %in% c("Bone_marrow", "Blood")]
+```
+  
+###Normalizing, dimensionality reduction, clustering
+```{r}
+##############################################
+# NORMALIZATION
+##############################################
+
+set.seed(100)
+sce_Neutro_BM_BL <- logNormCounts(sce_Neutro_BM_BL)
+
+##############################################
+# PER-GENE VARIATION (HVGs)
+##############################################
+
+dec.sce_BM_BL <- modelGeneVar(sce_Neutro_BM_BL)
+chosen_BM_BL  <- getTopHVGs(dec.sce_BM_BL, prop = 1)
+str(chosen_BM_BL)
+
+##############################################
+# DIMENSIONALITY REDUCTION: PCA
+##############################################
+
+set.seed(1458847)
+sce_Neutro_BM_BL <- runPCA(
+  sce_Neutro_BM_BL,
+  subset_row = chosen_BM_BL,
+  name       = "PCA_HVGs_BM_BL"
+)
+
+percent.var_BM_BL <- attr(reducedDim(sce_Neutro_BM_BL, "PCA_HVGs_BM_BL"), "percentVar")
+cat("Percentage of variance explained by top PCs (BM_BL):", percent.var_BM_BL, "\n")
+
+
+##############################################
+# RUN UMAPs
+##############################################
+
+# Before batch correction
+set.seed(20398)
+sce_Neutro_BM_BL <- runUMAP(
+  sce_Neutro_BM_BL,
+  n_dimred = 10,
+  dimred   = "PCA_HVGs_BM_BL",
+  name     = "UMAP_BM_BL_raw"
+)
+
+# After Harmony batch correction
+set.seed(20398)
+sce_Neutro_BM_BL <- runUMAP(
+  sce_Neutro_BM_BL,
+  n_dimred = 10,
+  dimred   = "PCA_HVGs_BM_BL_corr",
+  name     = "UMAP_BM_BL_corrected"
+)
+
+##############################################
+# CLUSTERING (on Harmony-corrected PCs)
+##############################################
+
+set.seed(20300)
+sce.g_BM_BL <- buildSNNGraph(
+  sce_Neutro_BM_BL,
+  k         = 30,
+  use.dimred = "UMAP_BM_BL_raw"
+)
+sce.louvain_BM_BL <- igraph::cluster_louvain(sce.g_BM_BL)$membership
+colLabels(sce_Neutro_BM_BL) <- factor(sce.louvain_BM_BL)
+
+##############################################
+# UMAP PLOTS FOR BM_BL OBJECT
+##############################################
+
+# 1) NFYA expression on corrected UMAP
+set.seed(20300)
+plotReducedDim(
+  sce_Neutro_BM_BL,
+  dimred    = "UMAP_BM_BL_raw",
+  colour_by = "Nfya",
+  text_by   = "label",      # if you have a 'label' column; otherwise remove
+  point_size = 2
+)
+
+# 2) By Organ (if column exists)
+plotReducedDim(
+  sce_Neutro_BM_BL,
+  dimred    = "UMAP_BM_BL_raw",
+  colour_by = "Organ",      # change if your metadata column has different name
+  text_by   = "Condition"   # or remove if not needed
+)
+
+# 3) By Cxcr2 expression (if gene present)
+plotReducedDim(
+  sce_Neutro_BM_BL,
+  dimred    = "UMAP_BM_BL_raw",
+  colour_by = "Cxcr2",
+  text_by   = "label"
+)
+
+# 4) By cluster label
+plotReducedDim(
+  sce_Neutro_BM_BL,
+  dimred    = "UMAP_BM_BL_raw",
+  colour_by = "label",
+  text_by   = "label"
+)
+
+```
+
+##To define color palette
+```{r}
+# Define new cell types and corresponding color palette
+color_palette_15 <- c(
+  "#1f78b4", # blue
+  "#e31a1c", # red
+  "#33a02c", # green
+  "#ff7f00", # orange
+  "#6a3d9a", # purple
+  "#b15928", # brown
+  "#a6cee3", # light blue
+  "#fb9a99", # light red
+  "#b2df8a", # light green
+  "#fdbf6f", # light orange
+  "#cab2d6", # light purple
+  "#ffff99", # yellow
+  "#8dd3c7", # teal
+  "#bebada", # lavender
+  "#fb8072"  # salmon
+)
+
+# Define custom order for new cell types
+custom_order <- c("15", "12", "11", "10", "14", "13", "7", "4", "8", "5", "1", "6", "9", "3", "2")
+```
+
+#plot UMAP with defined colours
+##Figure S2A
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+# Create a data frame with UMAP coordinates and the cell labels
+umap_data <- data.frame(
+  umap_1 = reducedDim(sce_Neutro_BM_BL, "UMAP_BM_BL_raw")[, 1],
+  umap_2 = reducedDim(sce_Neutro_BM_BL, "UMAP_BM_BL_raw")[, 2],
+  label = sce_Neutro_BM_BL$label
+)
+
+# Ensure the labels follow the custom order
+umap_data$label <- factor(umap_data$label, levels = custom_order)
+
+# Calculate the center (median) of each cluster
+cluster_centers <- umap_data %>%
+  group_by(label) %>%
+  summarize(
+    center_umap1 = median(umap_1, na.rm = TRUE),
+    center_umap2 = median(umap_2, na.rm = TRUE)
+  )
+
+# Create the UMAP plot with the custom color palette
+umap_plot <- ggplot(umap_data, aes(x = umap_1, y = umap_2, color = label)) +
+  geom_point(size = 2, alpha = 0.5) +
+  scale_color_manual(values = color_palette_15) +
+  theme_classic(base_size = 16) +
+  labs(title = "UMAP by Cell Label", x = "UMAP 1", y = "UMAP 2") +
+  theme(
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 14)
+  )
+
+# Add cluster center labels with a white box, black text, and connecting segment
+umap_plot +
+  geom_label_repel(
+    data = cluster_centers,
+    aes(x = center_umap1, y = center_umap2, label = label),
+    fill = "white",
+    color = "black",
+    segment.color = "black",
+    size = 6,
+    box.padding = unit(0.5, "lines"),
+    point.padding = unit(0.5, "lines")
+  )
+
+
+```
+
+##Plotting Nfya across clusters
+##Figure S2B
+```{r}
+library(ggplot2)
+library(dplyr)
+
+## 0. Define your 15-color palette
+color_palette_15 <- c(
+  "#1f78b4", "#e31a1c", "#33a02c", "#ff7f00", "#6a3d9a",
+  "#b15928", "#a6cee3", "#fb9a99", "#b2df8a", "#fdbf6f",
+  "#cab2d6", "#ffff99", "#8dd3c7", "#bebada", "#fb8072"
+)
+
+## 1. Define your custom cluster order (replace with your real order)
+custom_order <- c("15", "12", "11", "10", "14", "13", "7", "4", "8", "5", "1", "6", "9", "3", "2")
+
+## 2. Make sure 'label' in sce_Neutro_BM_BL is a factor in that order
+sce_Neutro_BM_BL$label <- factor(
+  sce_Neutro_BM_BL$label,
+  levels = custom_order
+)
+
+## 3. Extract Nfya expression from logcounts
+nfya_expr <- as.numeric(
+  assay(sce_Neutro_BM_BL, "logcounts")["Nfya", ]
+)
+
+df <- data.frame(
+  label = sce_Neutro_BM_BL$label,
+  Nfya  = nfya_expr
+) %>%
+  filter(label %in% custom_order)
+
+## 4. Build the violin + boxplot
+ggplot(df, aes(y = label, x = Nfya, fill = label)) +
+  geom_violin(trim = FALSE, scale = "width",
+              color = "black", alpha = 0.85) +
+  geom_boxplot(width = 0.15,
+               outlier.size = 0.6,
+               color = "black",
+               alpha = 0.95) +
+  scale_fill_manual(values =
+                      setNames(color_palette_15[seq_along(custom_order)],
+                               custom_order)
+  ) +
+  labs(
+    y = "Cluster",
+    x = "Nfya expression (logcounts)"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    text = element_text(family = "Helvetica"),   # EPS/PDF friendly
+    axis.title.x = element_text(size = 18, family = "Helvetica"),
+    axis.title.y = element_text(size = 18, family = "Helvetica"),
+    axis.text.x  = element_text(size = 16, family = "Helvetica"),
+    axis.text.y  = element_text(size = 16, family = "Helvetica"),
+    legend.position = "none"
+  )
+
+```
+
+##Figure S1A
+```{r}
+library(SingleCellExperiment)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+## 1) Define maturation order
+custom_order <- c("15","12","11","10","14","13","7","4","8","5","1","6","9","3","2")
+
+sce_Neutro_BM_BL$label <- factor(
+  sce_Neutro_BM_BL$label,
+  levels = custom_order
+)
+
+## 2) Genes of interest
+genes <- c("Nfya", "Nfyb", "Nfyc")
+genes <- genes[genes %in% rownames(sce_Neutro_BM_BL)]
+if (length(genes) == 0)
+  stop("None of Nfya / Nfyb / Nfyc found in the object.")
+
+## 3) Extract logcounts and build long dataframe
+expr_mat <- assay(sce_Neutro_BM_BL, "logcounts")[genes, , drop = FALSE]
+
+df_long <- as.data.frame(t(expr_mat)) %>%
+  mutate(label = sce_Neutro_BM_BL$label) %>%
+  pivot_longer(
+    cols      = all_of(genes),
+    names_to  = "gene",
+    values_to = "expr"
+  ) %>%
+  filter(!is.na(label))
+
+## 4) Summarise mean expression per cluster
+df_sum <- df_long %>%
+  group_by(label, gene) %>%
+  summarise(
+    mean_expr = mean(expr, na.rm = TRUE),
+    .groups   = "drop"
+  ) %>%
+  mutate(label = factor(label, levels = custom_order))
+
+## 5) Define fixed colors
+nfya_colors <- c(
+  "Nfya" = "#b5361c",
+  "Nfyb" = "#1c9d7c",
+  "Nfyc" = "#3a507f"
+)
+
+## 6) Line plot across maturation
+p <- ggplot(df_sum, aes(x = label, y = mean_expr, color = gene, group = gene)) +
+  geom_line(linewidth = 1.3) +
+  geom_point(size = 3) +
+  scale_color_manual(values = nfya_colors) +
+  labs(
+    x = "Cluster (maturation order)",
+    y = "Mean expression (logcounts)",
+    title = "NFYA complex expression across neutrophil maturation"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    text = element_text(family = "Helvetica"),
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 12),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16),
+    legend.title = element_blank()
+  )
+
+print(p)
+```
+
+
+###Subsetting on Blood, UMAP, Clustering, Volcano
+##Figure S2E
+```{r}
+############################################################
+## 0) SUBSET: Blood only
+############################################################
+sce_Blood <- sce_Neutro_BM_BL[, sce_Neutro_BM_BL$Organ == "Blood"]
+
+############################################################
+## 1) Define Nfya Q95 groups
+############################################################
+nfya_expr <- as.numeric(assay(sce_Blood, "logcounts")["Nfya", ])
+cutoff_q95 <- quantile(nfya_expr, 0.95, na.rm = TRUE)
+
+sce_Blood$Nfya_q95 <- ifelse(nfya_expr >= cutoff_q95, "high", "low")
+sce_Blood$Nfya_q95 <- factor(sce_Blood$Nfya_q95, levels = c("low","high"))
+
+table(sce_Blood$Nfya_q95)
+
+############################################################
+## 2) FUNCTION: Percent expressed
+############################################################
+get_pexpr <- function(data, group, threshold=0, digits=2){
+  if(ncol(data)!=length(group)) stop("ncol(data) != length(group)")
+  if(!is.numeric(threshold) | threshold < 0) stop("threshold must be numeric and > 0")
+  datar <- (data>threshold) * 1
+  a <- base::rowsum(x=t(datar), group=group)
+  b <- as.numeric(table(group)[rownames(a)])
+  f <- base::round(100*t(apply(a, 2, function(x) x/b)), digits=digits)
+  f
+}
+
+############################################################
+## 3) PERCENT EXPRESSED (Using Blood subset)
+############################################################
+expr_mat <- assay(sce_Blood, "logcounts")
+group_vec <- sce_Blood$Nfya_q95
+
+percent_expressed <- get_pexpr(
+  data      = expr_mat,
+  group     = group_vec,
+  threshold = 0
+)
+
+############################################################
+## 4) FILTER GENES: Require ≥5% expression in either NFYA group
+############################################################
+min_expression <- 5
+genes_to_use <- rownames(percent_expressed)[
+  apply(percent_expressed, 1, function(row) any(row >= min_expression))
+]
+
+length(genes_to_use)
+
+############################################################
+## 5) CREATE CLEAN OBJECT + DGEList
+############################################################
+sce_Blood.clean <- sce_Blood[genes_to_use, ]
+
+library(edgeR)
+y <- DGEList(
+  counts  = counts(sce_Blood.clean),
+  samples = colData(sce_Blood.clean)
+)
+
+## Normalize
+y <- calcNormFactors(y)
+
+## DESIGN: NFYA high/low
+design <- model.matrix(~0 + Nfya_q95, y$samples)
+colnames(design) <- gsub("Nfya_q95", "label", colnames(design))
+design
+
+## Dispersion
+y <- estimateDisp(y, design)
+
+## Fit model
+fit <- glmQLFit(y, design, robust = TRUE)
+
+############################################################
+## 6) CONTRAST + DE ANALYSIS with logFC threshold (glmTreat)
+############################################################
+contrasts <- makeContrasts(
+  labelhigh_vs_labellow = labelhigh - labellow,
+  levels = design
+)
+
+res <- sapply(colnames(contrasts), function(con){
+  tt <- topTags(glmTreat(fit, contrast = contrasts[,con], log2(1.5)), n=Inf)$table
+  return(data.frame(Gene = rownames(tt), tt))
+}, simplify = FALSE)
+
+############################################################
+## 7) Rank DEGs + Create Signatures
+############################################################
+ranked <- RankDEGs(
+  res,
+  delim           = "_vs_",
+  signif.column   = "FDR",
+  signif.threshold= 0.1,
+  effect.column   = "logFC",
+  effect.threshold= 0,
+  gene.column     = "Gene",
+  rnk.column      = "PValue",
+  rnk.method      = "increasing"
+)
+
+signatures <- CreateGeneSignatures(
+  ranked  = ranked,
+  keep.n  = 50,
+  min.prop= 0.8
+)
+
+lengths(signatures)
+
+############################################################
+## 8) EXTRACT DE TABLE
+############################################################
+data <- as.data.frame(res$labelhigh_vs_labellow)
+
+############################################################
+## 9) VOLCANO PLOT — updated theme
+############################################################
+library(ggplot2)
+library(ggrepel)
+
+data$Gene <- rownames(data)
+data <- subset(data, Gene != "Nfya")
+data$negLogFDR <- -log10(data$FDR)
+
+## Label top 8 up/down
+top8_high <- data[order(data$logFC, decreasing = TRUE), ][1:8, ]
+top8_low  <- data[order(data$logFC, decreasing = FALSE), ][1:8, ]
+label_genes <- rbind(top8_high, top8_low)
+
+data$label_gene <- ifelse(data$Gene %in% label_genes$Gene, data$Gene, "")
+data$colorGroup <- ifelse(data$Gene %in% label_genes$Gene, "highlight", "normal")
+
+volcano_plot <- ggplot(data, aes(x=logFC, y=negLogFDR, color=colorGroup)) +
+  geom_point(size=2.5, alpha=0.5) +
+  scale_color_manual(values=c("normal"="grey", "highlight"="red2")) +
+  geom_label_repel(
+    aes(label=label_gene),
+    size=5,
+    fill="white",
+    color="black",
+    box.padding=0.5,
+    point.padding=0.5,
+    label.size=0.5,
+    max.overlaps=Inf
+  ) +
+  labs(
+    x = "Log2FC",
+    y = "-Log10(FDR)"
+  ) +
+  scale_x_continuous(limits = c(-10,10)) +
+  scale_y_continuous(limits = c(0,10)) +
+
+  ## ⭐ Your theme block added here
+  theme_classic() +
+  theme(
+    axis.text.x  = element_text(size = 18),
+    axis.text.y  = element_text(size = 18),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  )
+
+print (volcano_plot)
+```
+
+
+
+#MACROPHAGES
+#SUBSETTING MACROPHAGES
+```{r}
+sce_Macrophage<- combined_sce[, combined_sce$cell_type == "Macrophage" & combined_sce$Organ == "Aorta"]
+```
+
+#Normalizing, dimensionality reduction, clustering
+```{r}
+##############################################
+#NORMALIZATION
+#LIBRARY SIZE NORMALIZATION
+set.seed(100)
+sce_Macrophage<- logNormCounts(sce_Macrophage)
+#convert to a seurat object if needed
+#seurat_obj <- as.Seurat(sce_filtered, counts = "counts", data = "logcounts")
+
+#PER-GENE VARIATION
+dec.sce <- modelGeneVar(sce_Macrophage)
+chosen <- getTopHVGs(dec.sce, prop=2)
+str(chosen)
+
+#############################################
+#DIMENSIONALITY REDUCTION: PCA Analysis
+set.seed(1458847) 
+sce_Macrophage <- runPCA(sce_Macrophage, subset_row = chosen, name = "PCA_HVGs") 
+percent.var <- attr(reducedDim(sce_Macrophage, 'PCA_HVGs'), 'percentVar')
+cat("Percentage of variance explained by top PCs:", percent.var, "\n")
+
+############################################
+# RUN HARMONY TO REMOVE BATCH EFFECTS
+set.seed(12345)
+reducedDim(sce_Macrophage, 'PCA_HVGs_corr') <- HarmonyMatrix(reducedDim(sce_Macrophage, 'PCA_HVGs'), meta_data = colData(sce_Macrophage), vars_use = 'Condition')
+
+############################################
+# RUN UMAPs
+set.seed(20398) 
+sce_Macrophage <- runUMAP(sce_Macrophage, n_dimred = 10, dimred = 'PCA_HVGs', name = "UMAP_1") #BEFORE BATCH CORRECTION
+#HARMONY BATCH CORRECTION
+set.seed(20398) 
+sce_Macrophage <- runUMAP(sce_Macrophage, n_dimred = 10, dimred = 'PCA_HVGs_corr', name = "UMAP_corrected_mouse")#AFTER 
+
+############################################
+# CLUSTERING
+set.seed(20300)
+# Building SNN graph and clustering with Louvain algorithm
+sce.g <- buildSNNGraph(sce_Macrophage, k = 30, use.dimred = 'PCA_HVGs_corr')
+sce.louvain <- igraph::cluster_louvain(sce.g)$membership
+colLabels(sce_Macrophage) <- factor(sce.louvain)
+
+
+set.seed(20300)
+plotReducedDim(sce_Macrophage, "UMAP_corrected_mouse", colour_by = "Nfya", text_by = "label")
+plotReducedDim(sce_Macrophage, "UMAP_corrected_mouse", colour_by = "Organ", text_by = "Condition")
+plotReducedDim(sce_Macrophage, "UMAP_corrected_mouse", colour_by = "Cxcr2", text_by = "label")
+plotReducedDim(sce_Macrophage, "UMAP_corrected_mouse", colour_by = "label", text_by = "label")
+```
+
+#plot UMAP with defined colours
+##Figure 1A
+```{r}
+############################
+## 1. Define palette + order
+############################
+
+# Hokusai1 palette in the required order (2,3,5,1,4,6,7)
+nizami_colors <- c(
+  "2" = "#dd7867",
+  "3" = "#b83326",
+  "5" = "#edb144",
+  "1" = "#c8570d",
+  "4" = "#8cc8bc",
+  "6" = "#7da7ea",
+  "7" = "#5773c0"
+)
+
+custom_order <- c("2", "3", "5", "1", "4", "6", "7")
+
+
+###################################
+## 2. Build UMAP plotting dataframe
+###################################
+
+umap_data <- data.frame(
+  umap_1 = reducedDim(sce_Macrophage, "UMAP_corrected_mouse")[, 1],
+  umap_2 = reducedDim(sce_Macrophage, "UMAP_corrected_mouse")[, 2],
+  label  = sce_Macrophage$label
+)
+
+# Apply factor ordering
+umap_data$label <- factor(umap_data$label, levels = custom_order)
+
+
+########################################
+## 3. Compute cluster centers (medians)
+########################################
+
+cluster_centers <- umap_data %>%
+  group_by(label) %>%
+  summarize(
+    center_umap1 = median(umap_1, na.rm = TRUE),
+    center_umap2 = median(umap_2, na.rm = TRUE)
+  )
+
+
+########################################
+## 4. Plot UMAP with custom Hokusai palette
+########################################
+
+umap_plot <- ggplot(umap_data, aes(x = umap_1, y = umap_2, color = label)) +
+  geom_point(size = 2, alpha = 0.55) +
+  scale_color_manual(values = nizami_colors) +
+  theme_classic(base_size = 16) +
+  labs(
+    title = "Macrophage UMAP",
+    x = "UMAP 1",
+    y = "UMAP 2",
+    color = "Cluster"
+  ) +
+  theme(
+    legend.title = element_text(size = 16),
+    legend.text  = element_text(size = 14)
+  )
+
+# Add cluster center labels with repelling
+umap_plot +
+  geom_label_repel(
+    data = cluster_centers,
+    aes(x = center_umap1, y = center_umap2, label = label),
+    fill = "white",
+    color = "black",
+    segment.color = "black",
+    size = 6,
+    box.padding = unit(0.5, "lines"),
+    point.padding = unit(0.5, "lines"),
+    label.size = 0.3
+  )
+
+
+```
+
+##Figure 1C
+```{r}
+##########################################################
+## 1. Nizami palette adapted to your cluster order
+##########################################################
+
+nizami_colors <- c(
+  "2" = "#dd7867",
+  "3" = "#b83326",
+  "5" = "#edb144",
+  "1" = "#c8570d",
+  "4" = "#8cc8bc",
+  "6" = "#7da7ea",
+  "7" = "#5773c0"
+)
+
+cluster_order <- c("2", "3", "5", "1", "4", "6", "7")
+
+
+##########################################################
+## 2. Build dataframe for plotting
+##########################################################
+
+df <- data.frame(
+  label = sce_Macrophage$label,
+  Nfya  = logcounts(sce_Macrophage)["Nfya", ]
+)
+
+df$label <- factor(df$label, levels = cluster_order)
+
+
+##########################################################
+## 3. Violin + boxplot (horizontal)
+##########################################################
+
+ggplot(df, aes(y = label, x = Nfya, fill = label)) +
+  geom_violin(
+    trim = FALSE,
+    scale = "width",
+    color = "black",
+    alpha = 0.85
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.size = 0.8,
+    color = "black",
+    alpha = 0.9
+  ) +
+  scale_fill_manual(values = nizami_colors) +
+  labs(
+    y = "Macrophage Cluster",
+    x = "Nfya expression (logcounts)"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    text = element_text(family = "Helvetica"),
+    axis.title.x = element_text(size = 16, family = "Helvetica"),
+    axis.title.y = element_text(size = 16, family = "Helvetica"),
+    axis.text.x  = element_text(size = 14, family = "Helvetica"),
+    axis.text.y  = element_text(size = 14, family = "Helvetica"),
+    legend.position = "none"
+  )
+
+
+```
+
+#Dectection of NF-YA+ neutrophils
+```{r}
+# 1. Extract raw UMI counts for Ccr2 from sce_Neutro
+raw_counts <- assay(sce_Macrophage, "counts")["Nfya", ]
+
+# 2. Define “Ccr2 detected” as raw_counts ≥ 1 UMI
+sce_Macrophage$Nfya_detected <- raw_counts >= 1
+
+# 3. Quick check of how many cells are positive vs. negative
+table(sce_Macrophage$Nfya_detected)
+
+# 4. Plot UMAP colored by “Ccr2_detected” (TRUE/FALSE)
+set.seed(20300)
+plotReducedDim(
+  sce_Macrophage,
+  dimred    = "UMAP_corrected_mouse",
+  colour_by = "Nfya_detected",
+  text_by   = "Nfya_detected"    # optional: adds text labels
+)
+```
+
+#Analysis of clusters and heatmap
+##compute percent expressed
+```{r}
+#/ per gene calculate the number of cells per Organ that express it
+get_pexpr <- function(data, group, threshold=0, digits=2){
+  
+  if(ncol(data)!=length(group)) stop("ncol(data) != length(group)")
+  if(!is.numeric(threshold) | threshold < 0) stop("threshold must be numeric and > 0")
+  
+  datar <- (data>threshold) * 1
+  a <- base::rowsum(x=t(datar), group=group)
+  b <- as.numeric(table(group)[rownames(a)])
+  f <- base::round(100*t(apply(a, 2, function(x) x/b)), digits=digits)
+  f
+}
+
+percent_expressed <- get_pexpr(data = assay(sce_Macrophage), group = sce_Macrophage$label)
+```
+
+## Subset genes that are expressed by at least 10% of the cells
+```{r}
+min_expression <- 10
+genes_to_use <- rownames(percent_expressed)[apply(percent_expressed, 1, function(row) all(row >= min_expression))]# considering a 5% OVER ALL GROUPS
+```
+
+## Creating a new summed object and DGEList object
+```{r}
+sce_Macrophage.clean <- sce_Macrophage[genes_to_use,]
+y <- DGEList(counts(sce_Macrophage.clean), samples = colData(sce_Macrophage.clean))
+
+# Normalization
+y <- calcNormFactors(y)
+design <- model.matrix(~0 + label, y$samples)
+colnames(design) <- gsub('label', '', colnames(design))
+colnames(design) <- paste0("label", colnames(design))
+y <- estimateDisp(y, design)
+
+# Fit model
+fit <- glmQLFit(y, design, robust = TRUE)
+```
+
+## Get DEGs, testing against a fold change
+```{r}
+# Updated contrasts with 17 labels as the 18 is too small
+contrasts <- makeContrasts(
+  # Label 1 comparisons
+  label1_vs_label2 = label1 - label2,
+  label1_vs_label3 = label1 - label3,
+  label1_vs_label4 = label1 - label4,
+  label1_vs_label5 = label1 - label5,
+  label1_vs_label6 = label1 - label6,
+  label1_vs_label7 = label1 - label7,
+
+  # Label 2 comparisons
+  label2_vs_label3 = label2 - label3,
+  label2_vs_label4 = label2 - label4,
+  label2_vs_label5 = label2 - label5,
+  label2_vs_label6 = label2 - label6,
+  label2_vs_label7 = label2 - label7,
+
+  # Label 3 comparisons
+  label3_vs_label4 = label3 - label4,
+  label3_vs_label5 = label3 - label5,
+  label3_vs_label6 = label3 - label6,
+  label3_vs_label7 = label3 - label7,
+
+  # Label 4 comparisons
+  label4_vs_label5 = label4 - label5,
+  label4_vs_label6 = label4 - label6,
+  label4_vs_label7 = label4 - label7,
+
+  # Label 5 comparisons
+  label5_vs_label6 = label5 - label6,
+  label5_vs_label7 = label5 - label7,
+
+  # Label 6 comparisons
+  label6_vs_label7 = label6 - label7,
+
+  levels = design
+)
+
+
+
+# Get DEGs, testing against a fold change:                  
+res <- sapply(colnames(contrasts), function(con){
+  tt<-topTags(glmTreat(fit,contrast=contrasts[,con], log2(1.5)),n=Inf)$table
+  return(data.frame(Gene=rownames(tt), tt))
+}, simplify = FALSE)
+
+# Rank the DEGs:
+ranked <- RankDEGs(res, delim="_vs_", signif.column="FDR", signif.threshold=0.05,
+                   effect.column="logFC", effect.threshold=0, gene.column="Gene",
+                   rnk.column="PValue", rnk.method="increasing")
+
+# Create signatures, keeping top 50 signature genes that separate the respective celltype from all other celltypes:
+signatures <- CreateGeneSignatures(ranked=ranked, keep.n=5, min.prop=1)
+
+# check number of genes:
+lengths(signatures)
+```
+
+##Heatmap:Figure 2B
+```{r}
+############################################################
+## Heatmap of signature genes for 7 clusters (ComplexHeatmap)
+############################################################
+
+############################################################
+## 1. Cluster order + Nizami palette (7 clusters)
+############################################################
+
+cluster_order <- c("2", "3", "5", "1", "4", "6", "7")
+
+nizami_colors <- c(
+  "2" = "#dd7867",
+  "3" = "#b83326",
+  "5" = "#edb144",
+  "1" = "#c8570d",
+  "4" = "#8cc8bc",
+  "6" = "#7da7ea",
+  "7" = "#5773c0"
+)
+
+############################################################
+## 2. Compute logCPM from edgeR DGEList 'y'
+############################################################
+
+logcpm <- log2(edgeR::cpm(y, log = FALSE) + 1)
+
+############################################################
+## 3. Get unique signature genes that exist in logcpm
+############################################################
+
+sig_genes <- unique(unlist(signatures))
+sig_genes <- intersect(sig_genes, rownames(logcpm))
+
+if (length(sig_genes) == 0) {
+  stop("None of the signature genes are present in 'logcpm'.")
+}
+
+############################################################
+## 4. Z-score per gene (row) and trim 5–95% quantiles
+############################################################
+
+logcpmZ <- t(scale(t(logcpm[sig_genes, , drop = FALSE])))
+
+q_upper <- quantile(logcpmZ, 0.95, na.rm = TRUE)
+q_lower <- quantile(logcpmZ, 0.05, na.rm = TRUE)
+
+logcpmZ[logcpmZ > q_upper] <- q_upper
+logcpmZ[logcpmZ < q_lower] <- q_lower
+
+############################################################
+## 5. Sample metadata: labels for each column
+############################################################
+
+Metadata <- data.frame(
+  label = y$samples$label,
+  row.names = colnames(logcpmZ)
+)
+
+# Ensure labels use the desired order
+Metadata$label <- factor(Metadata$label, levels = cluster_order)
+
+# Order samples by cluster
+sorted_Metadata <- Metadata[order(Metadata$label), , drop = FALSE]
+col_order <- rownames(sorted_Metadata)
+
+############################################################
+## 6. Column annotation with Nizami colors
+############################################################
+
+ha_top <- HeatmapAnnotation(
+  label = sorted_Metadata$label,
+  col   = list(label = nizami_colors),
+  annotation_name_side = "left",
+  annotation_legend_param = list(
+    title = "Cluster",
+    grid_height = unit(4, "mm"),
+    grid_width  = unit(4, "mm")
+  )
+)
+
+############################################################
+## 7. Color function for expression (blue–white–red style)
+############################################################
+
+col_fun <- colorRamp2(
+  c(q_lower, 0, q_upper),
+  c("#1a318b", "#ffffff", "#9a133d")
+)
+
+############################################################
+## 8. Build Heatmap object
+##    (explicit naming avoids the "argument 3 matches multiple" error)
+############################################################
+
+#############################################
+##  Fixed Z-score range: -1.5 to +1.5
+#############################################
+
+z_min <- -1.5
+z_max <-  1.5
+
+# Cap matrix values to the new fixed range
+logcpmZ[logcpmZ < z_min] <- z_min
+logcpmZ[logcpmZ > z_max] <- z_max
+
+# New color function (blue → white → red)
+col_fun <- circlize::colorRamp2(
+  c(z_min, 0, z_max),
+  c("#1a318b", "#ffffff", "#9a133d")
+)
+
+#############################################
+## Heatmap with fixed range
+#############################################
+
+ht <- ComplexHeatmap::Heatmap(
+  matrix              = logcpmZ[, col_order, drop = FALSE],
+  name                = "z-score",
+  col                 = col_fun,
+  show_row_names      = TRUE,
+  show_column_names   = FALSE,
+  cluster_rows        = TRUE,
+  cluster_columns     = FALSE,    
+  top_annotation      = ha_top,
+  use_raster          = FALSE,
+  row_names_gp        = grid::gpar(fontsize = 12),
+
+  column_split        = sorted_Metadata$label,
+
+  heatmap_legend_param = list(
+    title  = "Expression (z)",
+    at     = c(-1.5, 0, 1.5),
+    labels = c("−1.5", "0", "+1.5")
+  )
+)
+
+
+
+############################################################
+## 9. Save to PDF (robust, no Cairo PNG issues)
+############################################################
+
+pdf(
+  file   = "~/heatmap_signatures_7clusters.pdf",  # <- change path as needed
+  width  = 7,
+  height = 9,
+  useDingbats = FALSE
+)
+draw(ht)
+dev.off()
+
+```
+
+#Analysis of NFYAhigh vs NFYAlow neutrophils
+```{r}
+############################################################
+## Q95 threshold for Nfya (Macrophages)
+## Assumes: sce_Macrophage is a SingleCellExperiment
+##          with assay "logcounts" and gene "Nfya"
+############################################################
+
+library(ggplot2)
+library(dplyr)
+
+set.seed(123)
+
+############################################################
+## 1. Extract Nfya logcounts
+############################################################
+
+gene_name <- "Nfya"
+
+gene_expression <- as.numeric(assay(sce_Macrophage, "logcounts")[gene_name, ])
+
+# Quick check
+summary(gene_expression)
+
+############################################################
+## 2. Compute Q95 cutoff
+############################################################
+
+cutoff_q95 <- as.numeric(quantile(gene_expression, 0.95, na.rm = TRUE))
+cutoff_q95
+
+############################################################
+## 3. Classify cells based on Q95 cutoff
+############################################################
+
+sce_Macrophage$Nfya_q95 <- ifelse(gene_expression >= cutoff_q95, "high", "low")
+sce_Macrophage$Nfya_q95 <- factor(sce_Macrophage$Nfya_q95, levels = c("low","high"))
+
+table(sce_Macrophage$Nfya_q95)
+
+############################################################
+## 4. Build data for plotting
+############################################################
+
+df_expr <- tibble::tibble(Expression = gene_expression)
+
+############################################################
+## 5. Plots
+############################################################
+
+## 5a. Density with Q95 cutoff
+p1 <- ggplot(df_expr, aes(x = Expression)) +
+  geom_density(linewidth = 1) +
+  geom_vline(xintercept = cutoff_q95, linetype = "dashed") +
+  labs(
+    title = paste0(gene_name, " density (Macrophages) — Q95 cutoff"),
+    x = "logcounts",
+    y = "Density"
+  ) +
+  theme_classic()
+
+p1
+
+## 5b. Histogram + density + Q95 cutoff
+p2 <- ggplot(df_expr, aes(x = Expression)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60, alpha = 0.3) +
+  geom_density(linewidth = 1) +
+  geom_vline(xintercept = cutoff_q95, linetype = "dashed") +
+  labs(
+    title = paste0(gene_name, " histogram + density (Macrophages) — Q95 cutoff"),
+    x = "logcounts",
+    y = "Density"
+  ) +
+  theme_classic()
+
+p2
+```
+
+```{r}
+############################################################
+## NFYA q95-based DEG analysis — Macrophages
+############################################################
+
+library(edgeR)
+library(dplyr)
+
+############################################################
+## 1) Compute percent expressed per NFYA-q95 group
+############################################################
+
+get_pexpr <- function(data, group, threshold = 0, digits = 2){
+  
+  if (ncol(data) != length(group))
+    stop("ncol(data) != length(group)")
+  if (!is.numeric(threshold) | threshold < 0)
+    stop("threshold must be numeric and >= 0")
+  
+  datar <- (data > threshold) * 1
+  a <- base::rowsum(x = t(datar), group = group)
+  b <- as.numeric(table(group)[rownames(a)])
+  f <- base::round(100 * t(apply(a, 2, function(x) x / b)), digits = digits)
+  f
+}
+
+# Expression matrix
+expr_mat <- assay(sce_Macrophage, "logcounts")
+
+# Grouping variable: NFYA Q95
+group_vec <- sce_Macrophage$Nfya_q95
+group_vec <- factor(group_vec, levels = c("low", "high"))
+
+table(group_vec)
+
+percent_expressed <- get_pexpr(
+  data      = expr_mat,
+  group     = group_vec,
+  threshold = 0
+)
+
+head(percent_expressed)
+
+
+############################################################
+## 2) Keep genes expressed in ≥5% of cells in ANY group
+############################################################
+
+min_expression <- 5
+
+genes_to_use <- rownames(percent_expressed)[
+  apply(percent_expressed, 1, function(x) any(x >= min_expression))
+]
+
+length(genes_to_use)
+
+
+############################################################
+## 3) Create DGEList and fit model
+############################################################
+
+sce_Macrophage.clean <- sce_Macrophage[genes_to_use, ]
+
+y <- DGEList(
+  counts  = counts(sce_Macrophage.clean),
+  samples = colData(sce_Macrophage.clean)
+)
+
+y <- calcNormFactors(y)
+
+design <- model.matrix(~0 + Nfya_q95, data = y$samples)
+colnames(design) <- c("NFYAlow", "NFYAhigh")
+
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design, robust = TRUE)
+
+
+############################################################
+## 4) Differential expression: NFYA-high vs NFYA-low
+############################################################
+
+contrasts <- makeContrasts(
+  NFYAhigh_vs_NFYAlow = NFYAhigh - NFYAlow,
+  levels = design
+)
+
+res <- topTags(
+  glmTreat(
+    fit,
+    contrast = contrasts[, "NFYAhigh_vs_NFYAlow"],
+    log2(1.5)
+  ),
+  n = Inf
+)$table
+
+res$Gene <- rownames(res)
+
+
+############################################################
+## 5) Rank DEGs and create gene signatures
+############################################################
+
+ranked <- RankDEGs(
+  list(NFYAhigh_vs_NFYAlow = res),
+  delim             = "_vs_",
+  signif.column     = "FDR",
+  signif.threshold  = 0.1,
+  effect.column     = "logFC",
+  effect.threshold  = 0,
+  gene.column       = "Gene",
+  rnk.column        = "PValue",
+  rnk.method        = "increasing"
+)
+
+signatures <- CreateGeneSignatures(
+  ranked   = ranked,
+  keep.n   = 50,
+  min.prop = 0.8
+)
+
+lengths(signatures)
+
+```
+
+```{r}
+data<- as.data.frame(res$NFYAhigh_vs_NFYAlow)
+```
+
+##Plotting Volcano
+##Figure 2D
+```{r}
+############################################################
+## Volcano plot — Macrophage NFYA_q95 high vs low
+############################################################
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# Start from the DE table returned by edgeR
+data <- as.data.frame(res)
+
+# Ensure Gene column exists
+if (!"Gene" %in% colnames(data)) {
+  data$Gene <- rownames(data)
+}
+
+# Remove Nfya itself (optional)
+data <- subset(data, Gene != "Nfya")
+
+# -log10(FDR)
+data$negLogFDR <- -log10(data$FDR)
+
+# Pick top 8 up/down by logFC for labeling
+topN <- 8
+top_high <- data[order(data$logFC, decreasing = TRUE), ][1:min(topN, nrow(data)), ]
+top_low  <- data[order(data$logFC, decreasing = FALSE), ][1:min(topN, nrow(data)), ]
+label_genes <- rbind(top_high, top_low)
+
+data$label_gene <- ifelse(data$Gene %in% label_genes$Gene, data$Gene, "")
+data$colorGroup <- ifelse(data$Gene %in% label_genes$Gene, "highlight", "normal")
+
+# Volcano plot (axes automatic + padded)
+volcano_plot <- ggplot(data, aes(x = logFC, y = negLogFDR, color = colorGroup)) +
+  geom_point(size = 2.5, alpha = 0.5) +
+  scale_color_manual(values = c("normal" = "grey", "highlight" = "red2")) +
+  geom_label_repel(
+    aes(label = label_gene),
+    size = 5,
+    fill = "white",
+    color = "black",
+    box.padding = 0.5,
+    point.padding = 0.5,
+    label.size = 0.5,
+    max.overlaps = Inf
+  ) +
+  labs(
+    title = "Macrophages: NFYA-high (Q95) vs NFYA-low",
+    x = "Log2FC",
+    y = "-Log10(FDR)"
+  ) +
+  scale_x_continuous(expand = expansion(mult = 0.05)) +
+  scale_y_continuous(expand = expansion(mult = 0.05)) +
+  theme_classic() +
+  theme(
+    axis.text.x  = element_text(size = 14),
+    axis.text.y  = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  )
+
+print(volcano_plot)
+
+```
+
+##Signatures
+###Creating datasets
+```{r}
+#### 1) Macrophage signature dataframe (from previous step) ####
+mac_signatures <- data.frame(
+  Signature = c(
+    # Resident-like
+    rep("Resident_like", 12),
+    # Inflammatory
+    rep("Inflammatory", 14),
+    # IFN-stimulated
+    rep("IFN_stimulated", 11),
+    # TREM2+ foamy
+    rep("TREM2_foamy", 21),
+    # Proliferating
+    rep("Proliferating", 11)
+  ),
+  Gene = c(
+    # Resident-like
+    "Lyve1","Folr2","Cx3cr1","Mrc1","Cd163","Vsig4","F13a1","Cbr2","Sepp1","Pf4","Gas6","Igf1",
+
+    # Inflammatory
+    "Il1b","Tnf","Nlrp3","Tlr2","Tlr4","Ccl2","Ccl3","Ccl4","Ccl7","Cxcl2","Ptgs2",
+    "Socs3","Irf5","Stat1",
+
+    # IFN-stimulated
+    "Isg15","Ifit1","Ifit3","Ifi204","Oasl1","Rsad2","Irf7","Irf9","Gbp2","Mx1","Stat1",
+
+    # TREM2 foamy
+    "Trem2","Cd9","Lgals3","Spp1","Gpnmb","Ctsb","Ctsd","Ctsl","Cd63","Hexb",
+    "Atox1","Capg","Anxa1","S100a6","Lpl","Fabp4","Fabp5","Lipa","Abca1","Apoe","Plin2",
+
+    # Proliferating
+    "Mki67","Stmn1","Top2a","Ccnb1","Ccnb2","Cenpe","Birc5","Ube2c","Cdk1","Tyms","Pcna"
+  ),
+  stringsAsFactors = FALSE
+)
+
+#### 2) Gene sets from your existing wide df ####
+df <- as.data.frame(Gene_Sets_Complete_updated_2)
+
+gene_sets_existing <- list()
+
+for (col_name in colnames(df)) {
+  gene_values <- unique(na.omit(df[[col_name]]))
+  gene_set <- GeneSet(gene_values, setName = col_name)
+  gene_sets_existing[[col_name]] <- gene_set
+}
+
+#### 3) Gene sets from macrophage signatures (long df) ####
+gene_sets_mac <- list()
+
+# split long df by Signature
+mac_list <- split(mac_signatures$Gene, mac_signatures$Signature)
+
+for (sig_name in names(mac_list)) {
+  gene_values <- unique(na.omit(mac_list[[sig_name]]))
+  gene_set <- GeneSet(gene_values, setName = sig_name)
+  gene_sets_mac[[sig_name]] <- gene_set
+}
+
+#### 4) Combine both into one GeneSetCollection ####
+New_gene_signatures <- GeneSetCollection(c(gene_sets_existing, gene_sets_mac))
+
+```
+
+###Calculating signatures_Ucell
+```{r}
+# Define the maximum allowed size for a gene set
+max_genes <- 1500
+
+# Trim each gene set to max_genes if necessary
+trimmed_gene_sets <- GeneSetCollection(
+  lapply(New_gene_signatures, function(gene_set) {
+    trimmed_genes <- head(geneIds(gene_set), max_genes)  # Keep only the first max_genes
+    GeneSet(trimmed_genes, setName = setName(gene_set))
+  })
+)
+
+# Run ESCAPE with the trimmed gene sets
+sce_Macrophage <- runEscape(
+    sce_Macrophage, 
+    gene.sets = trimmed_gene_sets, 
+    method = "UCell",
+    groups = 1000, 
+    cores = 4, 
+    maxRank = 5000, 
+    min.size = NULL, 
+    new.assay.name = "Gene_Set_Collections"
+)
+```
+
+
+Adding signatures to columns
+```{r}
+#Extracting data 
+Gene_Set_Collections_columns<- as.data.frame(t(sce_Macrophage@int_colData@listData[["altExps"]]@listData[["Gene_Set_Collections"]]@se@assays@data@listData[["Gene_Set_Collections"]]))
+
+sce_columns<-as.data.frame(colData(sce_Macrophage))#extract from colData
+coldata_new<- cbind(sce_columns, Gene_Set_Collections_columns)#join colData
+coldata_new<- DataFrame(coldata_new)##ojo con esto
+
+colData(sce_Macrophage)<- coldata_new #adding colData
+```
+
+###Analysis of significance in transcriptional signatures
+```{r}
+############################################################
+## Analysis of significance in transcriptional signatures
+## Object: sce_Macrophage
+## Grouping: Nfya_q95 (low / high)
+############################################################
+
+library(dplyr)
+library(rstatix)
+library(ggplot2)
+library(tidyr)
+library(ggpubr)
+
+############################################################
+## 1) Prepare metadata and score columns
+############################################################
+
+meta <- as.data.frame(colData(sce_Macrophage))
+
+# Safety check
+if (!"Nfya_q95" %in% colnames(meta)) {
+  stop("Column 'Nfya_q95' not found in sce_Macrophage colData.")
+}
+
+# Ensure factor ordering
+meta$Nfya_q95 <- factor(meta$Nfya_q95, levels = c("low", "high"))
+
+message("Nfya_q95 distribution:")
+print(table(meta$Nfya_q95))
+
+# Remove score columns that are completely NA
+score_cols2 <- score_cols[
+  colSums(!is.na(meta[, score_cols, drop = FALSE])) > 0
+]
+
+# Drop sizeFactor if present
+score_cols2 <- setdiff(score_cols2, "sizeFactor")
+
+message("Testing ", length(score_cols2), " signatures")
+
+
+############################################################
+## 2) Loop over each signature and run t-test
+############################################################
+
+all_ttests <- tibble()
+
+for (sc in score_cols2) {
+  
+  message("\n=== Working on: ", sc, " ===")
+  
+  # Extract grouping + score
+  df <- meta %>%
+    select(Nfya_q95, value = all_of(sc)) %>%
+    filter(!is.na(Nfya_q95), !is.na(value))
+  
+  # Skip empty
+  if (nrow(df) < 10) {
+    message("Skipping ", sc, " — too few observations")
+    next
+  }
+  
+  # Must have both groups
+  if (n_distinct(df$Nfya_q95) < 2) {
+    message("Skipping ", sc, " — only one NFYA group present")
+    next
+  }
+  
+  # Variance check
+  gcheck <- df %>%
+    group_by(Nfya_q95) %>%
+    summarise(n_unique = n_distinct(value), .groups = "drop")
+  
+  if (any(gcheck$n_unique < 2)) {
+    message("Skipping ", sc, " — no variance in one group")
+    next
+  }
+  
+  # Welch t-test
+  stat.test <- tryCatch(
+    {
+      t_test(df, value ~ Nfya_q95, var.equal = FALSE)
+    },
+    error = function(e) {
+      message("Skipping ", sc, " — t-test failed: ", e$message)
+      return(NULL)
+    }
+  )
+  
+  if (is.null(stat.test) || nrow(stat.test) == 0) next
+  
+  # Means for directionality
+  means <- df %>%
+    group_by(Nfya_q95) %>%
+    summarise(mean_value = mean(value), .groups = "drop") %>%
+    pivot_wider(
+      names_from  = Nfya_q95,
+      values_from = mean_value,
+      names_prefix = "mean_"
+    ) %>%
+    mutate(delta_mean = mean_high - mean_low)
+  
+  # y-position for p-value
+  y.pos <- max(df$value, na.rm = TRUE) * 1.05
+  
+  stat.test <- stat.test %>%
+    mutate(
+      y.position = y.pos,
+      label = paste0("p = ", signif(p, 2))
+    )
+  
+  # Store results
+  all_ttests <- bind_rows(
+    all_ttests,
+    stat.test %>%
+      mutate(
+        score      = sc,
+        mean_low   = means$mean_low,
+        mean_high  = means$mean_high,
+        delta_mean = means$delta_mean
+      )
+  )
+  
+  # Plot
+  p <- ggplot(df, aes(x = Nfya_q95, y = value)) +
+    geom_violin(width = 0.9, trim = FALSE) +
+    geom_boxplot(width = 0.2, outlier.size = 0.3) +
+    labs(
+      title = sc,
+      x     = "NFYA (Q95: low vs high)",
+      y     = sc
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.2))) +
+    theme_classic(base_size = 14) +
+    stat_pvalue_manual(
+      stat.test,
+      label      = "label",
+      xmin       = "group1",
+      xmax       = "group2",
+      y.position = "y.position",
+      tip.length = 0.02,
+      bracket.size = 0.3,
+      inherit.aes = FALSE
+    )
+  
+  ggsave(
+    filename = file.path(output_dir, paste0("TTEST_NFYA_q95_", sc, ".png")),
+    plot     = p,
+    width    = 8,
+    height   = 6,
+    dpi      = 300
+  )
+}
+
+############################################################
+## 3) Add BH FDR and write CSV
+############################################################
+
+if (nrow(all_ttests) > 0) {
+  
+  all_ttests <- all_ttests %>%
+    mutate(
+      p.adj = p.adjust(p, method = "BH"),
+      signif = case_when(
+        p.adj < 0.001 ~ "***",
+        p.adj < 0.01  ~ "**",
+        p.adj < 0.05  ~ "*",
+        TRUE          ~ "ns"
+      )
+    )
+  
+  write.csv(
+    all_ttests,
+    file.path(output_dir, "Signature_comparison_NFYA_q95_withFDR.csv"),
+    row.names = FALSE
+  )
+  
+} else {
+  message("No successful t-tests were performed.")
+}
+
+############################################################
+## END
+############################################################
+
+```
+
+#Circular Loliplot
+##Figure 2E
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+## Map scores to categories + pretty labels (new terms)
+cat_map_mac <- tibble::tribble(
+  ~score,                                                         ~Category,    ~label,
+  # --- Function / immune programs ---
+  "Phagocytosis..GO.0006911.",                                     "Function",   "Phagocytosis",
+  "Phagosomes_maturation._GO_0090382.",                            "Function",   "Phagosomes maturation",
+  "NADPH.oxidase..Henderson.and.Chappel..1996.",                   "Function",   "NADPH oxidase",
+  "TNF.receptor.signaling.pathway..316be05e.6196.11e5.8ac5.06603eb7f303.",
+                                                                    "Function",   "TNF receptor signaling",
+  "Mdsc",                                                          "Function",   "MDSC",
+  "Immune.suppression..Provided.by.Sven.Brandau.",                 "Function",   "Immune suppression",
+  "Neutrophil.Maturation..Xie.et.al..Nat.Immunol.",                "Function",   "Neutrophil maturation",
+
+  # --- TFs ---
+  "Irf2",                                                          "TF",         "Irf2",
+  "CEBPd",                                                         "TF",         "CEBPd",
+  "Irf4",                                                          "TF",         "Irf4",
+  "Ep300",                                                         "TF",         "Ep300",
+  "JunB",                                                          "TF",         "JunB",
+
+  # --- Metabolism ---
+  "Glycolysis...Reactome.Pathway.Database..R.MMU.70171...GO_0006096.","Metabolism","Glycolysis",
+  "Oxidative.phosphorylation..GO.000619.",                          "Metabolism", "Oxidative phosphorylation",
+  "Electron.transport.chain..GO.0022900.",                          "Metabolism", "Electron transport chain",
+  "Tricarboxylic.acid.cycle..GO.0006099.",                          "Metabolism", "TCA cycle",
+  "pentose.phosphate.shunt..GO.0006098.",                           "Metabolism", "Pentose phosphate shunt"
+)
+
+## Metadata
+meta_mac <- as.data.frame(colData(sce_Macrophage))
+
+## Make sure grouping exists + is ordered (Q95)
+if (!"Nfya_q95" %in% colnames(meta_mac)) stop("sce_Macrophage$Nfya_q95 not found.")
+meta_mac$Nfya_q95 <- factor(meta_mac$Nfya_q95, levels = c("low","high"))
+table(meta_mac$Nfya_q95)
+
+## Keep only scores that actually exist in colData
+present_scores <- intersect(cat_map_mac$score, colnames(meta_mac))
+if (length(present_scores) == 0) stop("None of the requested signatures are present in colData(sce_Macrophage).")
+
+cat_map_mac2 <- cat_map_mac %>% filter(score %in% present_scores)
+
+## Fold-change (high / low)
+df_fc_mac <- meta_mac %>%
+  select(Nfya_q95, all_of(cat_map_mac2$score)) %>%
+  pivot_longer(-Nfya_q95, names_to = "score", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  group_by(score, Nfya_q95) %>%
+  summarize(mean_val = mean(value), .groups = "drop") %>%
+  pivot_wider(
+    names_from   = Nfya_q95,
+    values_from  = mean_val,
+    names_prefix = "Nfya_"
+  ) %>%
+  mutate(fold_change = Nfya_high / Nfya_low) %>%
+  inner_join(cat_map_mac2, by = "score") %>%
+  mutate(
+    Category = factor(Category, levels = c("TF", "Function", "Metabolism"))
+  ) %>%
+  arrange(Category, fold_change) %>%
+  mutate(label = factor(label, levels = label))
+
+## Plot
+circ_mac <- ggplot(df_fc_mac, aes(x = label, y = fold_change, colour = Category)) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "black", linewidth = 1.3) +
+  geom_segment(aes(xend = label, y = 1, yend = fold_change, colour = Category),
+               linewidth = 1.2) +
+  geom_point(size = 5) +
+  geom_text(
+    aes(label = sprintf("%.2f", fold_change), y = fold_change + 0.03),
+    size = 3.4, fontface = "bold", show.legend = FALSE
+  ) +
+  coord_polar(theta = "x", clip = "off") +
+  scale_colour_manual(
+    values = c(
+      "TF"         = "#6c5d9e",
+      "Metabolism" = "#e48171",
+      "Function"   = "#355828"
+    )
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold", margin = margin(t = 12)),
+    axis.text.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom",
+    plot.margin      = margin(t = 15, r = 40, b = 15, l = 40)
+  )
+
+circ_mac
+
+
+```
+
+#MONOCYTES IN BLOOD AND BONE MARROW
+```{r}
+sce_monocyte<- combined_sce[, combined_sce$cell_type == "Monocyte"]
+```
+
+```{r}
+############################################################
+## NORMALIZATION
+############################################################
+
+# Library-size normalization
+set.seed(100)
+sce_monocyte <- logNormCounts(sce_monocyte)
+
+############################################################
+## PER-GENE VARIATION (HVG selection)
+############################################################
+
+dec.sce <- modelGeneVar(sce_monocyte)
+
+# Use top HVGs (prop = 2 as in your macrophage analysis)
+chosen <- getTopHVGs(dec.sce, prop = 2)
+str(chosen)
+
+############################################################
+## DIMENSIONALITY REDUCTION: PCA
+############################################################
+
+set.seed(1458847)
+sce_monocyte <- runPCA(
+  sce_monocyte,
+  subset_row = chosen,
+  name = "PCA_HVGs"
+)
+
+percent.var <- attr(reducedDim(sce_monocyte, "PCA_HVGs"), "percentVar")
+cat("Percentage of variance explained by top PCs:\n")
+print(percent.var)
+
+############################################################
+## BATCH CORRECTION WITH HARMONY
+############################################################
+
+# Assumes 'Condition' exists in colData(sce_monocyte)
+set.seed(12345)
+reducedDim(sce_monocyte, "PCA_HVGs_corr") <- HarmonyMatrix(
+  reducedDim(sce_monocyte, "PCA_HVGs"),
+  meta_data = colData(sce_monocyte),
+  vars_use  = "Condition"
+)
+
+############################################################
+## UMAP EMBEDDINGS
+############################################################
+
+# Before batch correction
+set.seed(20398)
+sce_monocyte <- runUMAP(
+  sce_monocyte,
+  n_dimred = 10,
+  dimred   = "PCA_HVGs",
+  name     = "UMAP_1"
+)
+
+# After Harmony correction
+set.seed(20398)
+sce_monocyte <- runUMAP(
+  sce_monocyte,
+  n_dimred = 10,
+  dimred   = "PCA_HVGs_corr",
+  name     = "UMAP_corrected_mouse"
+)
+
+############################################################
+## CLUSTERING (SNN + Louvain)
+############################################################
+
+set.seed(20300)
+
+sce.g <- buildSNNGraph(
+  sce_monocyte,
+  k = 30,
+  use.dimred = "PCA_HVGs_corr"
+)
+
+sce.louvain <- igraph::cluster_louvain(sce.g)$membership
+colLabels(sce_monocyte) <- factor(sce.louvain)
+
+############################################################
+## VISUALIZATION
+############################################################
+
+set.seed(20300)
+
+plotReducedDim(
+  sce_monocyte,
+  "UMAP_corrected_mouse",
+  colour_by = "Nfya",
+  text_by   = "label"
+)
+
+plotReducedDim(
+  sce_monocyte,
+  "UMAP_corrected_mouse",
+  colour_by = "Organ",
+  text_by   = "Condition"
+)
+
+plotReducedDim(
+  sce_monocyte,
+  "UMAP_corrected_mouse",
+  colour_by = "Ly6c2",
+  text_by   = "label"
+)
+
+plotReducedDim(
+  sce_monocyte,
+  "UMAP_corrected_mouse",
+  colour_by = "label",
+  text_by   = "label"
+)
+
+```
+
+##Figure S1B/C
+```{r}
+# UMAP coordinates + cluster labels
+umap_data <- data.frame(
+  umap_1 = reducedDim(sce_monocyte, "UMAP_corrected_mouse")[, 1],
+  umap_2 = reducedDim(sce_monocyte, "UMAP_corrected_mouse")[, 2],
+  label  = sce_monocyte$label
+)
+
+# Ensure label is factor
+umap_data$label <- factor(umap_data$label)
+
+# Compute cluster centers (median is robust)
+cluster_centers <- umap_data %>%
+  group_by(label) %>%
+  summarise(
+    center_umap1 = median(umap_1, na.rm = TRUE),
+    center_umap2 = median(umap_2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+p_clusters <- ggplot(umap_data, aes(x = umap_1, y = umap_2, color = label)) +
+  geom_point(size = 2, alpha = 0.6) +
+  scale_color_manual(values = color_palette_15) +
+  theme_classic(base_size = 16) +
+  labs(
+    title = "Monocyte UMAP – clusters",
+    x = "UMAP 1",
+    y = "UMAP 2"
+  ) +
+  theme(
+    legend.position = "none"
+  ) +
+  geom_label_repel(
+    data = cluster_centers,
+    aes(
+      x = center_umap1,
+      y = center_umap2,
+      label = label
+    ),
+    fill = "white",
+    color = "black",
+    segment.color = "black",
+    size = 6,
+    label.size = 0.4,
+    box.padding = unit(0.5, "lines"),
+    point.padding = unit(0.5, "lines"),
+    inherit.aes = FALSE
+  )
+
+print(p_clusters)
+
+# Add Ly6c2 expression
+umap_data$Ly6c2 <- as.numeric(
+  assay(sce_monocyte, "logcounts")["Ly6c2", ]
+)
+
+p_ly6c2 <- ggplot(umap_data, aes(x = umap_1, y = umap_2, color = Ly6c2)) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_color_viridis_c(option = "magma") +
+  theme_classic(base_size = 16) +
+  labs(
+    title = "Monocyte UMAP – Ly6c2 expression",
+    x = "UMAP 1",
+    y = "UMAP 2",
+    color = "Ly6c2\n(logcounts)"
+  ) +
+  geom_label_repel(
+    data = cluster_centers,
+    aes(
+      x = center_umap1,
+      y = center_umap2,
+      label = label
+    ),
+    fill = "white",
+    color = "black",
+    segment.color = "black",
+    size = 6,
+    label.size = 0.4,
+    box.padding = unit(0.5, "lines"),
+    point.padding = unit(0.5, "lines"),
+    inherit.aes = FALSE
+  )
+
+print(p_ly6c2)
+
+```
+
+###Annotation of Ly6c subpopulations
+```{r}
+# Define clusters
+ly6c_high_clusters <- c("1", "2", "4", "7")
+ly6c_low_clusters  <- c("3", "5", "6")
+
+# Ensure label is character (important for %in%)
+lab <- as.character(sce_monocyte$label)
+
+sce_monocyte$Ly6c_group <- dplyr::case_when(
+  lab %in% ly6c_high_clusters ~ "Ly6c_high",
+  lab %in% ly6c_low_clusters  ~ "Ly6c_low",
+  TRUE                        ~ "Other"
+)
+
+sce_monocyte$Ly6c_group <- factor(
+  sce_monocyte$Ly6c_group,
+  levels = c("Ly6c_high", "Ly6c_low", "Other")
+)
+
+# Sanity check
+table(sce_monocyte$Ly6c_group)
+
+```
+
+###Plotting 
+##Figure S2D
+```{r}
+############################################################
+## NFYA / NFYB / NFYC expression across Ly6c groups & organs
+## Organ order: Bone marrow → Blood → Aorta
+############################################################
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+## Gene colors
+nfya_colors <- c(
+  "Nfya" = "#b5361c",
+  "Nfyb" = "#1c9d7c",
+  "Nfyc" = "#3a507f"
+)
+
+## Genes and organs of interest
+genes_use  <- c("Nfya", "Nfyb", "Nfyc")
+organs_use <- c("Bone_marrow", "Blood", "Aorta")  # <- desired order
+
+## Extract expression (logcounts)
+expr_mat <- assay(sce_monocyte, "logcounts")[genes_use, , drop = FALSE]
+
+## Build plotting dataframe
+df_plot <- as.data.frame(t(expr_mat)) %>%
+  mutate(
+    Ly6c_group = sce_monocyte$Ly6c_group,
+    Organ      = sce_monocyte$Organ
+  ) %>%
+  filter(
+    Ly6c_group %in% c("Ly6c_high", "Ly6c_low"),
+    Organ %in% organs_use
+  ) %>%
+  pivot_longer(
+    cols = all_of(genes_use),
+    names_to  = "Gene",
+    values_to = "Expression"
+  )
+
+## Explicit factor ordering
+df_plot$Gene  <- factor(df_plot$Gene, levels = genes_use)
+df_plot$Organ <- factor(df_plot$Organ, levels = organs_use)
+
+## Violin plot
+p <- ggplot(
+  df_plot,
+  aes(x = Gene, y = Expression, fill = Gene)
+) +
+  geom_violin(
+    trim  = FALSE,
+    scale = "width",
+    alpha = 0.85,
+    color = "black"
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.size = 0.3,
+    alpha = 0.9
+  ) +
+  scale_fill_manual(values = nfya_colors) +
+  facet_grid(
+    Ly6c_group ~ Organ,
+    scales = "free_y"
+  ) +
+  labs(
+    x = NULL,
+    y = "Expression (logcounts)",
+    title = "NFYA complex expression across Ly6c monocyte subsets and organs"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(size = 14, face = "bold"),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 14, face = "bold"),
+    legend.position = "none"
+  )
+
+print(p)
+
+```
+
