@@ -1,8 +1,10 @@
 ---
-title: "Silvestre_Roig_et_al. Science_Immunology_Flow_cytometry_Mass_Cytometry"
-output: html_notebook
+title: "Silvestre_Roig_et_al."
+subtitle: "Flow_cytometry_Mass_Cytometry analysis "
+author:
+- name: Carlos Silvestre-Roig
+  affiliation: Institute Of Experimental Pathology, ZMBE
 ---
-Creator: Carlos Silvestre Roig
 
 #Loading libraries
 ```{r}
@@ -21,15 +23,17 @@ library(dplyr)
 library(plotly)
 library(viridis)
 library(hrbrthemes)
+library(tidyr)
+library(purrr)
 ```
 
 # VISUALIZATION OF SPECTRAL FLOW CYTOMETRY ANALYSIS
 FIGURE 1, PANEL E
 #Loading data
 ```{r}
-All <- list.files(path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-168_Activation_different_models/NSA_009 _ CPM-AMD,LPS part_Neutro mix/ggCyto", pattern=".fcs$")
+All <- list.files(path="~/Dropbox/Backup_Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-168_Activation_different_models/NSA_009 _ CPM-AMD,LPS part_Neutro mix/ggCyto", pattern=".fcs$")
 
-All <- flowCore::read.flowSet(All, path="~/Dropbox/Backup Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-168_Activation_different_models/NSA_009 _ CPM-AMD,LPS part_Neutro mix/ggCyto", ignore.text.offset = TRUE)
+All <- flowCore::read.flowSet(All, path="~/Dropbox/Backup_Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-168_Activation_different_models/NSA_009 _ CPM-AMD,LPS part_Neutro mix/ggCyto", ignore.text.offset = TRUE)
 ```
 
 #Extracting data
@@ -170,7 +174,7 @@ data_to_plot$Cell_type<- factor(data_to_plot$Cell_type, levels = c("Progenitor",
 
 ggplot(data_to_plot, aes(x=PHATE_1_PC93, y=PHATE_2_PC93, color=Cell_type)) +
   geom_point(alpha=0.25, size = 1.5) +
-  scale_color_manual(values=c("Progenitor"= 'lightgray',"immNEU"='palegreen4',"matNEU1"= 'brown4',"matNEU2"= "brown4"))+
+  scale_color_manual(values=c("Progenitor"= 'lightgray',"immNEU"='cyan4',"matNEU1"= 'magenta4',"matNEU2"= "magenta4"))+
  theme_classic()+
     facet_wrap(~ Condition, nrow = 2)+
   theme(aspect.ratio=1,axis.text.x = element_blank(), axis.text.y = element_blank(),axis.ticks =   element_blank()) +xlab("PHATE-1") + ylab("PHATE-2")
@@ -1098,5 +1102,442 @@ ht <- Heatmap(
 
 ht
 
+```
+
+
+#MOSAIC ANALYSIS
+Load immNEU_proportions and matNEU_proportions
+
+#immNEU
+##Only removing clone 12 (white) that cannot be detected
+```{r}
+eps <- 1e-9
+
+## ============================================
+## 1. Exclude Clone 12 at the beginning
+## ============================================
+# Assume first column is clone name, e.g. "Clone 1", ..., "Clone 12"
+
+immNEU_proportions_filt <- immNEU_proportions %>%
+  rename(clone = 1) %>%
+  filter(clone != "Clone 12")
+
+# Global clone levels & palette (after exclusion)
+clone_levels <- unique(immNEU_proportions_filt$clone)
+
+Redon <- c(
+  "#5b859e", "#1e395f", "#75884b", "#1e5a46",
+  "#df8d71", "#af4f2f", "#d48f90", "#732f30",
+  "#ab84a5", "#59385c", "#d8b847", "#b38711"
+)
+
+n_colors <- min(length(clone_levels), length(Redon))
+palette_use <- setNames(Redon[seq_len(n_colors)],
+                        clone_levels[seq_len(n_colors)])
+
+## ============================================
+## 2. Sample metadata
+## ============================================
+sample_meta <- tibble(sample = names(immNEU_proportions_filt)[-1]) %>%
+  mutate(
+    tissue = str_extract(sample, "^[A-Z]+"),       # "BM", "BL", "SP"
+    mouse  = str_replace(sample, "^[A-Z]+_", "")   # "A1", "A2", ...
+  )
+
+## ============================================
+## 3. Long + wide table: clone × mouse × tissue
+## ============================================
+long_df <- immNEU_proportions_filt %>%
+  pivot_longer(
+    cols = -clone,
+    names_to = "sample",
+    values_to = "prop"
+  ) %>%
+  left_join(sample_meta, by = "sample") %>%
+  filter(tissue %in% c("BM", "BL", "SP"))
+
+wide_by_tissue <- long_df %>%
+  select(clone, mouse, tissue, prop) %>%
+  pivot_wider(
+    names_from  = tissue,
+    values_from = prop
+  ) %>%
+  mutate(
+    clone = factor(clone, levels = clone_levels)
+  )
+# columns: clone, mouse, BL, BM, SP
+
+## ============================================
+## 4. Scatter: BL vs BM / BL vs SP, all clones except 12
+## ============================================
+scatter_all_log_filtered <- wide_by_tissue %>%
+  pivot_longer(
+    cols      = c("BM", "SP"),
+    names_to  = "tissue",
+    values_to = "tissue_prop"
+  ) %>%
+  mutate(
+    BL_adj          = BL + eps,
+    tissue_prop_adj = tissue_prop + eps
+  )
+
+# R² per tissue
+stats_df <- scatter_all_log_filtered %>%
+  group_by(tissue) %>%
+  summarise(
+    r2 = {
+      fit <- lm(log10(tissue_prop_adj) ~ log10(BL_adj))
+      summary(fit)$r.squared
+    },
+    .groups = "drop"
+  )
+
+# label positions
+pos_df <- scatter_all_log_filtered %>%
+  group_by(tissue) %>%
+  summarise(
+    x = min(BL_adj, na.rm = TRUE) * 1.5,
+    y = max(tissue_prop_adj, na.rm = TRUE) / 1.5,
+    .groups = "drop"
+  )
+
+label_df <- stats_df %>%
+  left_join(pos_df, by = "tissue") %>%
+  mutate(label = paste0("R² = ", sprintf("%.2f", r2)))
+
+# Plot
+ggplot(scatter_all_log_filtered,
+       aes(x = BL_adj, y = tissue_prop_adj, color = clone)) +
+  geom_point(alpha = 0.9, size = 3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number()) +
+  scale_color_manual(values = palette_use) +
+  coord_equal() +
+  facet_wrap(~ tissue) +
+  theme_classic() +
+  labs(
+    title = "Clone proportions",
+    x = "Blood proportion (log10)",
+    y = "Tissue proportion (log10)",
+    color = "Clone"
+  ) +
+  geom_text(
+    data = label_df,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0, vjust = 1,
+    size = 4
+  )
+
+#Extract data as csv
+setwd("~/Dropbox/Backup_Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-172_Clonal_Analysis/Analysis")
+bm_sp_df <- wide_by_tissue %>%
+  select(BM, SP)
+
+write.csv(bm_sp_df, "BM_SP.csv", row.names = FALSE)
+
+```
+
+##Filtering based on logFC
+```{r}
+## ============================================================
+## One source of truth: BM/SP-filtered clones
+## ============================================================
+
+eps <- 1e-9
+threshold_point <- log2(1.5)   # ≈ 0.585
+
+## ------------------------------------------------------------
+## 0) Global clone levels and colour palette
+## ------------------------------------------------------------
+
+# original clone names from immNEU_proportions
+clone_levels <- unique(immNEU_proportions[[1]])   # e.g. "Clone 1", ..., "Clone 12"
+
+Redon <- c(
+  "#5b859e", "#1e395f", "#75884b", "#1e5a46",
+  "#df8d71", "#af4f2f", "#d48f90", "#732f30",
+  "#ab84a5", "#59385c", "#d8b847", "#b38711"
+)
+
+n_clones_all <- length(clone_levels)
+n_colors     <- min(n_clones_all, length(Redon))
+
+# named palette: each colour attached to a specific clone name
+palette_use <- setNames(Redon[seq_len(n_colors)],
+                        clone_levels[seq_len(n_colors)])
+
+## ------------------------------------------------------------
+## 1) Build wide_by_tissue: clone × mouse with BL, BM, SP
+## ------------------------------------------------------------
+
+sample_meta <- tibble(sample = names(immNEU_proportions)[-1]) %>%
+  mutate(
+    tissue = str_extract(sample, "^[A-Z]+"),      # BM, BL, SP
+    mouse  = str_replace(sample, "^[A-Z]+_", "")  # A1, A2, ...
+  )
+
+long_df <- immNEU_proportions %>%
+  rename(clone = 1) %>%
+  pivot_longer(cols = -clone, names_to = "sample", values_to = "prop") %>%
+  left_join(sample_meta, by = "sample") %>%
+  filter(tissue %in% c("BM", "BL", "SP"))
+
+wide_by_tissue <- long_df %>%
+  select(clone, mouse, tissue, prop) %>%
+  pivot_wider(names_from = tissue, values_from = prop)   # columns: clone, mouse, BL, BM, SP
+
+## ------------------------------------------------------------
+## 2) BM/SP fold-change and filter 
+## ------------------------------------------------------------
+
+bm_sp_fc <- wide_by_tissue %>%
+  mutate(
+    fold_change = (BM + eps) / (SP + eps),
+    abs_log2FC  = abs(log2(fold_change))
+  )
+
+filtered_fc <- wide_by_tissue %>%
+  left_join(
+    bm_sp_fc %>% select(clone, mouse, abs_log2FC),
+    by = c("clone", "mouse")
+  ) %>%
+  filter(!is.na(abs_log2FC),
+         abs_log2FC >= threshold_point) %>%
+  mutate(
+    # ensure clone is a factor with GLOBAL levels
+    clone = factor(clone, levels = clone_levels)
+  )
+
+## Quick sanity check: which clones survive the filter?
+sort(unique(filtered_fc$clone))
+
+## ============================================================
+## A) SCATTER: tissue (BM/SP) vs blood using filtered_fc
+## ============================================================
+
+scatter_all_log_fc03 <- filtered_fc %>%
+  pivot_longer(
+    cols      = c("BM", "SP"),
+    names_to  = "tissue",
+    values_to = "tissue_prop"
+  ) %>%
+  mutate(
+    BL_adj          = BL + eps,
+    tissue_prop_adj = tissue_prop + eps,
+    clone           = factor(clone, levels = clone_levels)  # same levels
+  )
+
+## R² per tissue
+stats_df_fc03 <- scatter_all_log_fc03 %>%
+  group_by(tissue) %>%
+  summarise(
+    r2 = {
+      fit <- lm(log10(tissue_prop_adj) ~ log10(BL_adj))
+      summary(fit)$r.squared
+    },
+    .groups = "drop"
+  )
+
+## label positions
+pos_df_fc03 <- scatter_all_log_fc03 %>%
+  group_by(tissue) %>%
+  summarise(
+    x = min(BL_adj, na.rm = TRUE) * 1.5,
+    y = max(tissue_prop_adj, na.rm = TRUE) / 1.5,
+    .groups = "drop"
+  )
+
+label_df_fc03 <- stats_df_fc03 %>%
+  left_join(pos_df_fc03, by = "tissue") %>%
+  mutate(label = paste0("R² = ", sprintf("%.2f", r2)))
+
+## Scatter plot
+## Scatter plot with BM = light blue, SP = magenta
+ggplot(scatter_all_log_fc03,
+       aes(x = BL_adj, y = tissue_prop_adj, color = tissue)) +
+
+ # geom_density_2d(color = "grey50", bins = 8) +
+
+  geom_point(alpha = 0.9, size = 4) +
+
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number()) +
+
+  ## Override colors: BM = light blue, SP = magenta
+  scale_color_manual(
+    values = c(
+      "BM" = "#6EC5FF",   # light blue
+      "SP" = "#FF4FB0"    # magenta
+    )
+  ) +
+
+  coord_equal() +
+  facet_wrap(~ tissue) +
+
+  theme_classic() +
+  labs(
+    title = "Clone proportions (filtered: |log2FC(BM/SP)| ≥ log2(1.5))",
+    x = "Blood proportion (log10)",
+    y = "Tissue proportion (log10)",
+    color = "Tissue"
+  ) +
+
+  geom_text(
+    data = label_df_fc03,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0, vjust = 1,
+    size = 4
+  )
+
+
+#CSV with values
+figure_plot_only <- scatter_all_log_fc03 %>%
+  select(
+    clone,
+    mouse,
+    tissue,
+    BL_adj,
+    tissue_prop_adj
+  )
+
+write.csv(
+  figure_plot_only,
+  "Figure_scatter_plotted_values.csv",
+  row.names = FALSE)
+```
+
+#matNEU
+```{r}
+eps <- 1e-9
+
+## ============================================
+## 1. Exclude Clone 12 at the beginning (matNEU)
+## ============================================
+# Assume first column is clone name, e.g. "Clone 1", ..., "Clone 12"
+
+matNEU_proportions_filt <- matNEU_proportions %>%
+  rename(clone = 1) %>%
+  filter(clone != "Clone 12")
+
+# Global clone levels & palette (after exclusion)
+clone_levels <- unique(matNEU_proportions_filt$clone)
+
+Redon <- c(
+  "#5b859e", "#1e395f", "#75884b", "#1e5a46",
+  "#df8d71", "#af4f2f", "#d48f90", "#732f30",
+  "#ab84a5", "#59385c", "#d8b847", "#b38711"
+)
+
+n_colors <- min(length(clone_levels), length(Redon))
+palette_use <- setNames(Redon[seq_len(n_colors)],
+                        clone_levels[seq_len(n_colors)])
+
+## ============================================
+## 2. Sample metadata
+## ============================================
+sample_meta <- tibble(sample = names(matNEU_proportions_filt)[-1]) %>%
+  mutate(
+    tissue = str_extract(sample, "^[A-Z]+"),       # "BM", "BL", "SP"
+    mouse  = str_replace(sample, "^[A-Z]+_", "")   # "A1", "A2", ...
+  )
+
+## ============================================
+## 3. Long + wide table: clone × mouse × tissue
+## ============================================
+long_df <- matNEU_proportions_filt %>%
+  pivot_longer(
+    cols = -clone,
+    names_to = "sample",
+    values_to = "prop"
+  ) %>%
+  left_join(sample_meta, by = "sample") %>%
+  filter(tissue %in% c("BM", "BL", "SP"))
+
+wide_by_tissue <- long_df %>%
+  select(clone, mouse, tissue, prop) %>%
+  pivot_wider(
+    names_from  = tissue,
+    values_from = prop
+  ) %>%
+  mutate(
+    clone = factor(clone, levels = clone_levels)
+  )
+# columns: clone, mouse, BL, BM, SP
+
+## ============================================
+## 4. Scatter: BL vs BM / BL vs SP, all clones except 12
+## ============================================
+scatter_all_log_filtered <- wide_by_tissue %>%
+  pivot_longer(
+    cols      = c("BM", "SP"),
+    names_to  = "tissue",
+    values_to = "tissue_prop"
+  ) %>%
+  mutate(
+    BL_adj          = BL + eps,
+    tissue_prop_adj = tissue_prop + eps
+  )
+
+# R² per tissue
+stats_df <- scatter_all_log_filtered %>%
+  group_by(tissue) %>%
+  summarise(
+    r2 = {
+      fit <- lm(log10(tissue_prop_adj) ~ log10(BL_adj))
+      summary(fit)$r.squared
+    },
+    .groups = "drop"
+  )
+
+# label positions
+pos_df <- scatter_all_log_filtered %>%
+  group_by(tissue) %>%
+  summarise(
+    x = min(BL_adj, na.rm = TRUE) * 1.5,
+    y = max(tissue_prop_adj, na.rm = TRUE) / 1.5,
+    .groups = "drop"
+  )
+
+label_df <- stats_df %>%
+  left_join(pos_df, by = "tissue") %>%
+  mutate(label = paste0("R² = ", sprintf("%.2f", r2)))
+
+# Plot
+ggplot(scatter_all_log_filtered,
+       aes(x = BL_adj, y = tissue_prop_adj, color = clone)) +
+  geom_density_2d(color = "grey50", bins = 8) +
+  geom_point(alpha = 0.9, size = 3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_y_log10(labels = scales::label_number()) +
+  scale_color_manual(values = palette_use) +
+  coord_equal() +
+  facet_wrap(~ tissue) +
+  theme_classic() +
+  labs(
+    title = "matNEU clone proportions (Clone 12 excluded)",
+    x = "Blood proportion (log10)",
+    y = "Tissue proportion (log10)",
+    color = "Clone"
+  ) +
+  geom_text(
+    data = label_df,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0, vjust = 1,
+    size = 4
+  )
+
+#Extract data as csv
+setwd("~/Dropbox/Backup_Work/Project_Neutrophil_Subsets/EXPERIMENTS/NS-172_Clonal_Analysis/Analysis")
+bm_sp_df <- wide_by_tissue %>%
+  select(BM, SP)
+
+write.csv(bm_sp_df, "matNEU_BM_SP.csv", row.names = FALSE)
 ```
 

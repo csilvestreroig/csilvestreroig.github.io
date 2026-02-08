@@ -1,0 +1,4198 @@
+---
+title: "Silvestre_Roig_et_al. "
+subtitle: "scRNA-seq analysis "
+author:
+- name: Carlos Silvestre-Roig
+  affiliation: Institute Of Experimental Pathology, ZMBE
+---
+
+##Loading packages
+```{r}
+############################################################
+## 1. Load packages
+############################################################
+suppressPackageStartupMessages({
+
+  ## Core Bioconductor
+  library(SingleCellExperiment)
+  library(SummarizedExperiment)
+  library(scuttle)
+  library(scater)
+  library(scran)
+  library(batchelor)
+  library(DropletUtils)
+  library(limma)
+  library(edgeR)
+  library(SingleR)
+  library(celldex)
+
+  ## Clustering / dimensionality reduction
+  library(igraph)
+  library(PCAtools)
+  library(destiny)       # diffusion maps
+  library(slingshot)     # pseudotime
+
+  ## Gene set tools
+  library(GSEABase)
+  library(fgsea)
+  library(escape)
+  library(AUCell)
+  library(CreateGeneSignatures)
+
+  ## Plotting
+  library(ggplot2)
+  library(ggrepel)
+  library(ggpubr)
+  library(pheatmap)
+  library(viridis)
+  library(scales)
+  library(RColorBrewer)
+  library(VennDiagram)
+  library(ggvenn)        # optional
+
+  ## Tidyverse utilities
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(rlang)
+  library(tibble)
+  library(readr)
+  library(stringr)
+
+  ## Velocity / trajectory (optional)
+  library(velociraptor)
+  library(dyno)
+
+  ## CITE-seq / HTO
+  library(CiteFuse)
+
+  ## Other utilities
+  library(Matrix)
+  library(gam)
+
+})
+```
+
+#CPM/AMD MODEL
+###Data Loading
+```{r}
+############################################################
+## Load 10X dataset into SingleCellExperiment
+############################################################
+
+data_dir <- #Add specific location
+list.files(data_dir)
+
+# Create SingleCellExperiment
+scNeutro <- read10xCounts(data_dir, col.names = TRUE)
+
+# Ensure unique & human-readable gene names
+rownames(scNeutro) <- uniquifyFeatureNames(
+  rowData(scNeutro)$ID,
+  rowData(scNeutro)$Symbol
+)
+```
+
+###Quality Control
+```{r}
+############################################################
+## Quality Control (QC)
+############################################################
+
+# Identify mitochondrial and ERCC transcripts
+is.mito  <- grepl("^mt-", rowData(scNeutro)$Symbol, ignore.case = TRUE)
+is.spike <- grepl("^ERCC", rownames(scNeutro))
+
+# Compute QC metrics
+qc_df <- perCellQCMetrics(
+  scNeutro,
+  subsets = list(mito = is.mito, ERCC = is.spike)
+)
+
+# Store QC metrics inside the object
+scNeutro <- addPerCellQC(
+  scNeutro,
+  subsets = list(mito = is.mito, ERCC = is.spike)
+)
+
+# Identify low-quality cells (MAD-based filtering)
+qc_lib     <- isOutlier(qc_df$sum,      log = TRUE, type = "lower")
+qc_detect  <- isOutlier(qc_df$detected, log = TRUE, type = "lower")
+qc_mito    <- isOutlier(qc_df$subsets_mito_percent, type = "higher")
+qc_ercc    <- isOutlier(qc_df$subsets_ERCC_percent, type = "higher")
+
+# Inspect thresholds (optional)
+attr(qc_lib,    "thresholds")
+attr(qc_detect, "thresholds")
+attr(qc_mito,   "thresholds")
+attr(qc_ercc,   "thresholds")
+
+
+############################################################
+## Filter low-quality cells
+############################################################
+
+# Combine all QC flags
+discard <- qc_lib | qc_detect | qc_ercc | qc_mito
+
+# Report how many cells are removed for each metric
+DataFrame(
+  LibSize   = sum(qc_lib),
+  NExprs    = sum(qc_detect),
+  ERCCProp  = sum(qc_ercc),
+  MitoProp  = sum(qc_mito),
+  TotalDrop = sum(discard)
+)
+
+# Subset to high-quality cells
+filtered <- scNeutro[, !discard]
+dim(filtered)
+```
+
+###Gene_level filtering
+```{r}
+############################################################
+## Gene-level expression filtering
+############################################################
+
+# 5.1 Remove genes with zero counts in all cells
+keep_feature <- nexprs(filtered, byrow = TRUE) > 0
+filtered <- filtered[keep_feature, ]
+dim(filtered)
+
+# 5.2 Filter by average expression
+ave.counts <- calculateAverage(filtered)
+
+hist(
+  log10(ave.counts),
+  breaks = 100, main = "",
+  col = "grey80",
+  xlab = expression(Log[10] ~ "average count")
+)
+
+# Threshold for low-abundance genes
+demo.keep <- ave.counts >= 1e-5
+filtered <- filtered[demo.keep, ]
+dim(filtered)
+
+# 5.3 Filter by number of cells in which each gene is expressed
+num.cells <- nexprs(filtered, byrow = TRUE)
+
+hist(
+  log10(num.cells),
+  breaks = 100, main = "",
+  col = "grey80",
+  xlab = expression(Log[10] ~ "number of cells")
+)
+
+# Keep genes expressed in >5 cells
+to.keep <- num.cells > 5
+filtered <- filtered[to.keep, ]
+dim(filtered)
+```
+
+###HTO analysis
+```{r}
+############################################################
+## HTO analysis (Cite-seq / CiteFuse)
+############################################################
+
+# Subset HTO rows (here using fixed row indices as in original script)
+# Consider replacing 16136:16145 with a gene-name based selection for robustness.
+HTO <- filtered[16136:16145, ]
+
+# Store HTO counts as an alternative experiment
+altExp(filtered, "HTO") <- HTO
+
+# Normalise HTO counts and embed in t-SNE space
+sce_citeseq <- CiteFuse::normaliseExprs(
+  sce         = filtered,
+  altExp_name = "HTO",
+  transform   = "log"
+)
+
+sce_citeseq <- scater::runTSNE(
+  sce_citeseq,
+  altexp = "HTO",
+  name   = "TSNE_HTO",
+  pca    = TRUE
+)
+
+CiteFuse::visualiseDim(
+  sce_citeseq,
+  dimNames = "TSNE_HTO"
+) + ggplot2::labs(title = "t-SNE (HTO)")
+
+############################################################
+## Doublet identification (between samples)
+############################################################
+
+sce_citeseq <- CiteFuse::crossSampleDoublets(sce_citeseq)
+
+# Doublet classification stored in colData:
+#   doubletClassify_between_label, doubletClassify_between_class
+table(sce_citeseq$doubletClassify_between_label)
+
+CiteFuse::visualiseDim(
+  sce_citeseq,
+  dimNames  = "TSNE_HTO",
+  colour_by = "doubletClassify_between_label"
+)
+
+# Pairwise scatter of HTO counts; co-expression → doublets
+CiteFuse::plotHTO(sce_citeseq, 1:4)
+
+############################################################
+## Doublet identification (within samples)
+############################################################
+
+sce_citeseq <- CiteFuse::withinSampleDoublets(
+  sce_citeseq,
+  minPts = 10
+)
+
+table(sce_citeseq$doubletClassify_within_label)
+
+CiteFuse::visualiseDim(
+  sce_citeseq,
+  dimNames  = "TSNE_HTO",
+  colour_by = "doubletClassify_within_label"
+)
+
+############################################################
+## Keep singlets only (both within and between)
+############################################################
+
+sce <- sce_citeseq[
+  ,
+  sce_citeseq$doubletClassify_within_class  == "Singlet" &
+  sce_citeseq$doubletClassify_between_class == "Singlet"
+]
+
+sce
+```
+
+###Sample annotation
+```{r}
+############################################################
+## Sample annotation
+############################################################
+
+stopifnot("Barcode" %in% colnames(colData(sce)))
+
+n_cells <- ncol(sce)
+
+## 1) LANE (1–8 based on barcode suffix)
+lane_num <- as.integer(sub(".*-", "", sce$Barcode))
+stopifnot(all(lane_num %in% 1:8))
+
+sce$Lane <- factor(paste0("Lane_", lane_num),
+                   levels = paste0("Lane_", 1:8))
+
+## 2) BATCH (Day): lanes {1,2} → 1; {3,4} → 2; {5,6} → 3; {7,8} → 4
+
+sce$Batch <- factor(
+  dplyr::case_when(
+    lane_num %in% c(1, 2) ~ 1L,
+    lane_num %in% c(3, 4) ~ 2L,
+    lane_num %in% c(5, 6) ~ 3L,
+    lane_num %in% c(7, 8) ~ 4L,
+    TRUE                  ~ NA_integer_
+  ),
+  levels = 1:4
+)
+
+## 3) MOUSE (m1–m16) from HTO label + batch
+
+hto_lab <- as.character(sce$doubletClassify_between_label)
+
+# group index within each day: (1,5)->1; (2,6)->2; (3,7)->3; (4,8)->4
+hto_group <- dplyr::case_when(
+  hto_lab %in% c("1", "5") ~ 1L,
+  hto_lab %in% c("2", "6") ~ 2L,
+  hto_lab %in% c("3", "7") ~ 3L,
+  hto_lab %in% c("4", "8") ~ 4L,
+  TRUE                     ~ NA_integer_
+)
+
+batch_int <- as.integer(as.character(sce$Batch))
+
+mouse_index <- (batch_int - 1L) * 4L + hto_group  # 1..16
+sce$Mouse <- factor(
+  paste0("m", mouse_index),
+  levels = paste0("m", 1:16)
+)
+
+## 4) ORGAN
+# Blood: HTO 1–4 in lanes 1,3,5,7 (odd lanes)
+# Organ_04: HTO 5–8 in lanes 1,3,5,7
+# BM:    HTO 1–4 in lanes 2,4,6,8 (even lanes)
+# Spleen:HTO 5–8 in lanes 2,4,6,8
+
+organ <- dplyr::case_when(
+  lane_num %% 2 == 1 & hto_lab %in% c("1","2","3","4") ~ "Blood",
+  lane_num %% 2 == 1 & hto_lab %in% c("5","6","7","8") ~ "Organ_04",
+  lane_num %% 2 == 0 & hto_lab %in% c("1","2","3","4") ~ "Bone_Marrow",
+  lane_num %% 2 == 0 & hto_lab %in% c("5","6","7","8") ~ "Spleen",
+  TRUE                                                 ~ NA_character_
+)
+
+sce$Organ <- factor(organ, levels = c("Blood", "Organ_04", "Bone_Marrow", "Spleen"))
+
+## 5) TREATMENT (PBS vs AMD)
+# Original indexing splits at ~half cells; equivalent biologically:
+# Day 1–2 (Batch 1–2) → PBS; Day 3–4 (Batch 3–4) → AMD
+
+sce$Treatment <- ifelse(sce$Batch %in% c("1", "2"), "PBS", "AMD")
+sce$Treatment <- factor(sce$Treatment, levels = c("PBS", "AMD"))
+
+## 6) 
+# No Treatment_01 HTO 1,2,5,6
+# Treatment_01:    HTO 3,4,7,8
+
+sce$Treatment_02 <- dplyr::case_when(
+  hto_lab %in% c("1","2","5","6") ~ "No_treatment_01",
+  hto_lab %in% c("3","4","7","8") ~ "Treatment_01",
+  TRUE                            ~ NA_character_
+)
+
+```
+
+Removing HTO from main assay
+```{r}
+############################################################
+## Remove HTO rows from main RNA expression matrix
+############################################################
+
+# Keep only gene rows (drop HTO features used in altExp("HTO"))
+# Here we mirror your original slicing:
+sce <- sce[1:16134, ]
+
+sce
+```
+
+###Saving Object
+```{r}
+############################################################
+## Save SingleCellExperiment object
+############################################################
+
+saveRDS(
+  sce,
+  file = "~/PATH/sce.rds.gz"
+)
+```
+
+###Normalization, dimensionality reduction and clustering
+Please note that the number of clusters might vary if ran everything from scratch. Follow the next code for mantaining the clusters identified in the paper
+```{r}
+############################################################
+## NORMALIZATION, HVGs, PCA, UMAP, GRAPH-BASED CLUSTERING
+############################################################
+
+set.seed(100)
+
+## 1) Library-size normalization (log-normalized counts)
+sce <- logNormCounts(sce)
+
+## 2) Per-gene variance modeling
+dec.sce <- modelGeneVar(sce)
+
+# Select top 20% HVGs
+chosen <- getTopHVGs(dec.sce, prop = 0.20)
+message("Number of HVGs selected: ", length(chosen))
+
+## 3) PCA on HVGs
+set.seed(1458847)
+sce <- runPCA(sce, subset_row = chosen, name = "PCA_HVGs")
+
+# Inspect variance explained
+percent.var <- attr(reducedDim(sce, "PCA_HVGs"), "percentVar")
+# Optionally, one can choose an elbow point using PCAtools:
+# chosen_elbow <- PCAtools::findElbowPoint(percent_var)
+# print(chosen_elbow)
+
+## 4) UMAP (pre-batch correction)
+# using first 10 PCs, as in original
+set.seed(20398)
+sce <- runUMAP(
+  sce,
+  n_dimred = 10,
+  dimred   = "PCA_HVGs",
+  name     = "UMAP_1"
+)
+
+## 5) Graph-based clustering (Louvain)
+set.seed(20300)
+
+# Build SNN graph using 10 PCs
+g <- buildSNNGraph(sce, k = 15, d = 10)
+
+# Louvain clustering
+clust <- igraph::cluster_louvain(g)$membership
+
+# Store into colLabels()
+colLabels(sce) <- factor(clust)
+
+message("Number of clusters detected: ", length(unique(colLabels(sce))))
+
+set.seed(20300)
+plotReducedDim(sce, dimred="UMAP_1", colour_by="label", text_by = "label", point_size =2)
+
+```
+
+###Cell annotation
+```{r}
+############################################################
+## CELL TYPE ANNOTATION WITH SingleR
+############################################################
+
+library(celldex)
+library(SingleR)
+
+# Example: using ImmGen as a reference (swap if using another reference)
+ref <- ImmGenData()
+
+# Run SingleR
+pred <- SingleR(
+  test   = sce,
+  ref    = ref,
+  labels = ref$label.main
+)
+
+# Add SingleR annotation to colData
+sce$SingleR_label <- pred$pruned.labels
+
+# Visualize marker-based confidence for each label assignment
+plotScoreHeatmap(pred)
+
+
+############################################################
+## HEATMAP OF SingleR LABELS vs YOUR CLUSTERS
+############################################################
+
+library(pheatmap)
+
+# Build contingency table
+tab <- table(
+  Assigned = pred$pruned.labels,
+  Cluster  = colLabels(sce)
+)
+
+# Log-transform for smoother visualization
+mat <- log2(tab + 10)
+
+# Plot heatmap
+pheatmap(
+  mat,
+  color = colorRampPalette(c("white", "steelblue"))(200),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize = 11,
+  border_color = NA,
+  main = "SingleR annotation vs cluster labels"
+)
+```
+
+###Cell assignment
+```{r}
+############################################################
+## CELL TYPE ASSIGNMENT (based on clustering labels)
+############################################################
+
+# Initialize column with "Unknown"
+sce$Cell_type <- "Unknown"
+
+# Assign cell types based on cluster labels (sce$label)
+sce$Cell_type[sce$label == "10"]                   <- "NK_cell"
+sce$Cell_type[sce$label == "6"]                    <- "DC"
+sce$Cell_type[sce$label == "15"]                   <- "Myeloid_progenitor"
+sce$Cell_type[sce$label %in% c("5", "7", "11")]    <- "Monocyte"
+sce$Cell_type[sce$label == "13"]                   <- "proNEU_preNEU"
+sce$Cell_type[sce$label %in% c("12", "9", "14")]   <- "immNEU"
+sce$Cell_type[sce$label %in% c("1","2","3","4","8")] <- "matNEU"
+
+# Convert to an ordered factor (your desired hierarchy)
+sce$Cell_type <- factor(
+  sce$Cell_type,
+  levels = c(
+    "NK_cell",
+    "DC",
+    "Monocyte",
+    "Myeloid_progenitor",
+    "proNEU_preNEU",
+    "immNEU",
+    "matNEU",
+    "Unknown"
+  )
+)
+
+# Plot UMAP
+set.seed(20300)
+plotReducedDim(
+  sce,
+  dimred    = "UMAP_1",
+  colour_by = "Cell_type",
+  text_by   = "Cell_type",
+  point_size = 1
+)
+```
+
+###To mantain same clusterin as in the manuscript, please download the object: sce_annotated from XXX
+if you want to transfer the metadata to your sce object
+```{r}
+############################################################
+## Reuse original clustering from `sce_annotated`
+############################################################
+
+# sce_annotated:original object (with 15 clusters)
+# sce          : your new object
+
+# 1) Basic sanity check: do we have the same cells?
+length(colnames(sce))
+length(colnames(sce_annotated))
+
+# If they are meant to be identical, this should be TRUE:
+all(colnames(sce) == colnames(sce_annotated))
+# If not, we’ll match by column name (barcode) below.
+
+# 2) Build an index to match cells by column name
+common_cells <- intersect(colnames(sce), colnames(sce_annotated))
+length(common_cells)
+
+# Make sure we’re not losing most of the cells:
+stopifnot(length(common_cells) > 0)
+
+# Reorder indices so they correspond to sce’s columns
+idx_old <- match(common_cells, colnames(sce_annotated))
+idx_new <- match(common_cells, colnames(sce))
+
+# 3) Transfer cluster labels
+
+## 3a) If your original clustering was stored in `sce_annotated$label`
+if ("label" %in% colnames(colData(sce_annotated))) {
+  # Initialize as NA
+  sce$label <- NA_character_
+  sce$label[idx_new] <- as.character(sce_annotated$label[idx_old])
+}
+
+## 3b) If you also used colLabels() originally
+if (!is.null(colLabels(sce_annotated))) {
+  lab_old <- colLabels(sce_annotated)
+  # align and store as colLabels in new object
+  cl_new <- rep(NA, ncol(sce))
+  cl_new[idx_new] <- as.character(lab_old[idx_old])
+  colLabels(sce) <- factor(cl_new)
+  
+  # optionally also keep a copy
+  sce$cluster_original <- colLabels(sce)
+}
+
+# 4) (Optional but recommended) transfer original Cell_type annotation
+if ("Cell_type" %in% colnames(colData(sce_annotated))) {
+  sce$Cell_type <- NA_character_
+  sce$Cell_type[idx_new] <- as.character(sce_annotated$Cell_type[idx_old])
+  
+  # keep it as factor with the same levels
+  sce$Cell_type <- factor(sce$Cell_type,
+                          levels = levels(sce_annotated$Cell_type))
+}
+```
+
+###Loading object
+```{r}
+filename <- file.choose() #Choose sce_annotated object from your path where was downloaded
+sce_annotated <- readRDS(filename)
+```
+
+###Subsetting 
+```{r}
+sce_annotated<- sce_annotated[, sce_annotated$Organ %in% c("Blood", "Bone Marrow", "Spleen")]
+sce_annotated<- sce_annotated[, sce_annotated$Treatment_02 %in% c("No_treatment_02")]
+```
+
+###Plots_Extended_Figure_2B
+```{r}
+#Plotted by cluster
+set.seed(20300)
+plotReducedDim(sce_annotated, dimred="UMAP_1", colour_by="label", text_by = "label", point_size =2)
+
+##Plotted by cell type
+set.seed(20300)
+plotReducedDim(sce_annotated, dimred="UMAP_1", colour_by="Cell_type", text_by = "Cell_type", point_size =2)
+```
+
+###Abundances and Stackedbar from Extended Figure 2C
+```{r}
+############################################################
+## 1) Build abundance table (Organ × Mouse × Treatment × Treatment_02 × Cell_type)
+############################################################
+
+abundances <- table(
+  Organ       = sce_annotated$Organ,
+  Mouse       = sce_annotated$Mouse,
+  Treatment   = sce_annotated$Treatment,
+  Treatment_02 = sce_annotated$Treatment_02,
+  Cell_type   = sce_annotated$Cell_type
+)
+
+# Convert to long data.frame: one row per combination
+df_long <- as.data.frame(abundances, responseName = "Count")
+
+############################################################
+## 2) Filter conditions
+############################################################
+
+df_long <- df_long %>%
+  # keep only No_treatment_02
+  dplyr::filter(Treatment_02 == "No_treatment_02") %>%
+  # drop Organ_04
+  dplyr::filter(Organ != "Organ_04") %>%
+  # drop specific PBS mice
+  dplyr::filter(
+    !(Mouse %in% c("m3", "m4", "m7", "m8", "m9",
+                   "m10", "m11", "m12", "m13", "m14", "m15", "m16") &
+      Treatment == "PBS")
+  ) %>%
+  # drop specific AMD mice
+  dplyr::filter(
+    !(Mouse %in% c("m1", "m2", "m3", "m4", "m5", "m6",
+                   "m7", "m8", "m11", "m12", "m15", "m16") &
+      Treatment == "AMD")
+  )
+
+############################################################
+## 3) Compute percentages per mouse / organ / treatment
+############################################################
+
+df_percent <- df_long %>%
+  group_by(Mouse, Organ, Treatment) %>%
+  mutate(
+    Total_Count = sum(Count),
+    Percentage  = (Count / Total_Count) * 100
+  ) %>%
+  ungroup()
+
+print(df_percent)
+
+############################################################
+## 4) Average percentages per Treatment × Cell_type × Organ
+############################################################
+
+average_data <- df_percent %>%
+  group_by(Treatment, Cell_type, Organ) %>%
+  summarise(
+    Average_Percentage = mean(Percentage),
+    .groups = "drop"
+  )
+
+print(average_data)
+
+############################################################
+## 5) Factor ordering
+############################################################
+
+average_data$Cell_type <- factor(
+  average_data$Cell_type,
+  levels = c(
+    "NK_cell",
+    "DC",
+    "Monocyte",
+    "Myeloid_progenitor",
+    "proNEU_preNEU",
+    "immNEU",
+    "matNEU"
+  )
+)
+
+average_data$Treatment <- factor(
+  average_data$Treatment,
+  levels = c("PBS", "AMD")
+)
+
+############################################################
+## 6) Plot stacked barplot
+############################################################
+
+ggplot(average_data, aes(x = Treatment, y = Average_Percentage, fill = Cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~ Organ, scales = "free_y") +
+  scale_y_continuous(
+    labels = scales::percent_format(scale = 1)
+  ) +
+  scale_fill_manual(
+    values = c("coral4", "palegreen4", "violetred4",
+               "gold3", "lightgrey", "cyan4", "chocolate3")
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Percentage",
+    title = "Proportional distribution of Cell_type by Treatment across organs",
+    fill = "Cell type"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, family = "Arial", size = 14),
+    axis.text.y  = element_text(family = "Arial", size = 14),
+    axis.title.x = element_text(family = "Arial", size = 18),
+    axis.title.y = element_text(family = "Arial", size = 14),
+    plot.title   = element_text(family = "Arial", size = 18, face = "bold"),
+    legend.title = element_text(family = "Arial", size = 14),
+    legend.text  = element_text(family = "Arial", size = 14)
+  )
+
+```
+
+###Analysis of neutrophil subpopulations
+As before, to mantain same clusterin as in the manuscript, please download the object: sce_Neutro from XXX
+if you want to transfer the metadata to your sce object
+```{r}
+############################################################
+## NEUTROPHIL SUBSET + BATCH CORRECTION (fastMNN)
+############################################################
+
+# 1) Subset to neutrophil clusters
+sce_neutro <- sce_annotated[
+  ,
+  sce_annotated$label %in% c("1","2","3","4","8","9","12","13","14")
+]
+
+############################################################
+## 2) Batch correction with fastMNN
+############################################################
+
+set.seed(1323)
+# Batch defined by 'Batch' column in colData
+sce_neutro_corrected <- fastMNN(
+  sce_neutro,
+  batch = sce_neutro$Batch
+)
+# fastMNN returns:
+#   assay "reconstructed"
+#   reducedDim "corrected"
+
+############################################################
+## 7) Copy metadata from original neutrophil subset
+############################################################
+
+# These columns must exist in sce_neutro; adjust names if you changed them earlier
+sce_neutro_corrected$Organ      <- sce_neutro$Organ
+sce_neutro_corrected$Treatment  <- sce_neutro$Treatment
+sce_neutro_corrected$Mouse      <- sce_neutro$Mouse
+sce_neutro_corrected$nUMI       <- sce_neutro$nUMI
+sce_neutro_corrected$Lane       <- sce_neutro$Lane
+sce_neutro_corrected$Antibiotic <- sce_neutro$Antibiotic   
+sce_neutro_corrected$sizeFactor <- sce_neutro$sizeFactor
+sce_neutro_corrected$Cell_type  <- sce_neutro$Cell_type
+
+############################################################
+## 8) Add counts / logcounts from original object
+############################################################
+
+assay(sce_neutro_corrected, "counts")    <- assay(sce_neutro, "counts")
+assay(sce_neutro_corrected, "logcounts") <- assay(sce_neutro, "logcounts")
+
+############################################################
+## 3) Highly variable genes (computed on original object)
+############################################################
+
+set.seed(1345)
+dec.sce <- modelGeneVar(
+  sce_neutro,
+  block = sce_neutro$Batch   # adjust for batch in HVG selection
+)
+chosen  <- getTopHVGs(dec.sce, prop = 0.10)
+message("Number of HVGs (neutrophils): ", length(chosen))
+
+############################################################
+## 4) PCA (on reconstructed expression) & UMAP (on corrected)
+############################################################
+
+set.seed(1458847)
+sce_neutro_corrected <- runPCA(
+  sce_neutro_corrected,
+  exprs_values = "reconstructed",
+  subset_row   = chosen,
+  name         = "PCA_HVGs"
+)
+
+# UMAP on the fastMNN "corrected" embedding (10 dims)
+set.seed(20398)
+sce_neutro_corrected <- runUMAP(
+  sce_neutro_corrected,
+  n_dimred = 10,
+  dimred   = "corrected",
+  name     = "UMAP_corrected"
+)
+
+############################################################
+## 5) Graph-based clustering (Louvain)
+############################################################
+
+set.seed(20300)
+sce_neutro_corrected.g <- buildSNNGraph(
+  sce_neutro_corrected,
+  k          = 15,
+  d          = 10,
+  use.dimred = NULL,
+  assay.type = "reconstructed"
+)
+
+sce_neutro_corrected_clust.louvain <-
+  igraph::cluster_louvain(sce_neutro_corrected.g)$membership
+
+colLabels(sce_neutro_corrected) <- factor(sce_neutro_corrected_clust.louvain)
+
+############################################################
+## 6) UMAP visualization
+############################################################
+
+set.seed(20300)
+plotReducedDim(
+  sce_neutro_corrected,
+  dimred    = "UMAP_corrected",
+  colour_by = "label",
+  text_by   = "label",
+  point_size = 2.5
+)
+```
+
+####Loading original sce_neutro 
+```{r}
+filename <- file.choose()
+sce_neutro <- readRDS(filename)
+```
+
+####Plot UMAPs for Extended Figure 2D (upper panel)
+```{r}
+set.seed(20300)
+plotReducedDim(
+  sce_neutro,
+  dimred    = "UMAP_corrected",
+  colour_by = "label",
+  text_by   = "label",
+  point_size = 2.5
+)
+```
+####Plot UMAPs for Figure 1F and Extended Figure 2D
+```{r}
+# Extract corrected UMAP embedding safely
+umap_mat <- reducedDim(sce_neutro, "UMAP_corrected")
+
+data <- as.data.frame(umap_mat)
+colnames(data) <- c("UMAP_1", "UMAP_2")
+
+# Add metadata
+data$Cell_type <- factor(sce_neutro$Cell_type)
+data$Treatment <- sce_neutro$Treatment
+data$Organ     <- sce_neutro$Organ
+
+celltype_cols <- c(
+  "proNEU_preNEU" = "lightgrey",
+  "immNEU"        = "cyan4",
+  "matNEU"        = "chocolate3"
+)
+
+#Figure 1F
+ggplot(data, aes(x = UMAP_1, y = UMAP_2, color = Cell_type)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = celltype_cols) +
+  facet_grid(Treatment ~ Organ) +
+  theme_classic(base_size = 14)
+
+#Extended Figure 2D (lower panel)
+ggplot(data, aes(x = UMAP_1, y = UMAP_2, color = Cell_type)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = celltype_cols) +
+  theme_classic(base_size = 14)
+
+```
+
+####Heatmap Extended Figure 2E
+```{r}
+############################################################
+## 1) Pseudobulk aggregation per cluster (label) × mouse
+############################################################
+
+# sce_neutro is your SingleCellExperiment with:
+# - counts()
+# - colData columns: label, Mouse
+
+summed <- aggregateAcrossCells(
+  sce_neutro,
+  id = colData(sce_neutro)[, c("label", "Mouse")]
+)
+
+summed$ncells   # number of cells contributing to each pseudobulk sample
+
+############################################################
+## 2) Percent of cells expressing each gene in each cluster
+############################################################
+
+labels <- sort(unique(sce_neutro$label))
+
+percent_expressed <- sapply(labels, function(cl) {
+  es <- sce_neutro[, sce_neutro$label == cl]
+  100 * Matrix::rowSums(counts(es) > 0) / ncol(es)
+})
+
+percent_expressed <- as.data.frame(percent_expressed)
+rownames(percent_expressed) <- rownames(sce_neutro)
+colnames(percent_expressed) <- paste0("Cluster_", labels)
+
+# Keep genes expressed in ≥10% of cells in *all* clusters
+genes_to_use <- percent_expressed %>%
+  dplyr::filter(if_all(everything(), ~ .x >= 10)) %>%
+  rownames()
+
+message("Genes kept (expressed in >=10% of cells in all clusters): ", length(genes_to_use))
+
+# Subset pseudobulk object to those genes
+summed.clean <- summed[genes_to_use, ]
+
+############################################################
+## 3) edgeR DGEList, normalization, design
+############################################################
+
+y <- edgeR::DGEList(
+  counts  = counts(summed.clean),
+  samples = as.data.frame(colData(summed.clean))
+)
+
+# Optional cell-count filter – currently does nothing, but left for completeness
+discarded <- summed.clean$ncells < 0
+y <- y[, !discarded]
+summary(discarded)
+
+# Normalization
+y <- calcNormFactors(y)
+
+# Design: one column per cluster label
+design <- model.matrix(~ 0 + label, y$samples)
+colnames(design)
+# e.g. "label1","label2",...
+
+############################################################
+## 4) Dispersion estimation & model fit
+############################################################
+
+y   <- estimateDisp(y, design)
+fit <- glmQLFit(y, design, robust = TRUE)
+
+############################################################
+## 5) All pairwise contrasts between clusters (automatic)
+############################################################
+
+clus_terms  <- colnames(design)         # e.g. "label1","label2",...
+n_clusters  <- length(clus_terms)
+
+contrast_list <- list()
+
+for (i in seq_len(n_clusters)) {
+  for (j in seq_len(n_clusters)) {
+    if (i < j) {
+      name <- paste0(clus_terms[i], "_vs_", clus_terms[j])
+      k <- rep(0, n_clusters)
+      names(k) <- clus_terms
+      k[clus_terms[i]] <-  1
+      k[clus_terms[j]] <- -1
+      contrast_list[[name]] <- k
+    }
+  }
+}
+
+contrasts <- do.call(cbind, contrast_list)
+
+############################################################
+## 6) DEGs via glmTreat + RankDEGs + CreateGeneSignatures
+##    (assumes RankDEGs() & CreateGeneSignatures() are available)
+############################################################
+
+res <- lapply(colnames(contrasts), function(con) {
+  tt <- topTags(
+    glmTreat(fit, contrast = contrasts[, con], lfc = log2(1.5)),
+    n = Inf
+  )$table
+  data.frame(Gene = rownames(tt), tt, row.names = NULL)
+})
+names(res) <- colnames(contrasts)
+
+# Rank DEGs
+ranked <- RankDEGs(
+  res,            # or `res` if function expects `ranked`
+  delim            = "_vs_",
+  signif.column    = "FDR",
+  signif.threshold = 0.05,
+  effect.column    = "logFC",
+  effect.threshold = 0,
+  gene.column      = "Gene",
+  rnk.column       = "PValue",
+  rnk.method       = "increasing"
+)
+
+# Create gene signatures: top 10 genes, present in >=75% of relevant comparisons
+signatures <- CreateGeneSignatures(
+  ranked   = ranked,
+  keep.n   = 10,
+  min.prop = 0.75
+)
+
+message("Number of signature genes per cluster:")
+print(lengths(signatures))
+
+############################################################
+## 7) Heatmap of signature genes (pseudobulk logCPM)
+############################################################
+
+logcpm <- log2(edgeR::cpm(y, log = FALSE) + 1)
+
+# union of all signature genes
+sig_genes <- unique(unlist(signatures))
+sig_genes <- sig_genes[sig_genes %in% rownames(logcpm)]  # safety
+logcpm_sig <- logcpm[sig_genes, , drop = FALSE]
+
+# Z-score per gene
+logcpmZ <- t(scale(t(logcpm_sig)))
+
+# Trim to 5–95% quantiles
+q_upper <- quantile(logcpmZ, 0.95, na.rm = TRUE)
+q_lower <- quantile(logcpmZ, 0.05, na.rm = TRUE)
+logcpmZ[logcpmZ > q_upper] <- q_upper
+logcpmZ[logcpmZ < q_lower] <- q_lower
+
+# Metadata: cluster label per pseudobulk sample
+Metadata <- data.frame(
+  Cluster = summed.clean$label,
+  row.names = colnames(logcpmZ)
+)
+
+# Custom order for clusters (adjust to your labels if needed)
+custom_order <- c("10", "12", "13", "11", "9", "5", "6", "3", "1", "4", "2", "7", "8")
+
+Metadata$Cluster <- factor(Metadata$Cluster, levels = custom_order)
+
+# Order columns according to custom cluster order
+sorted_idx      <- order(match(Metadata$Cluster, custom_order))
+col_order       <- colnames(logcpmZ)[sorted_idx]
+sorted_Metadata <- Metadata[sorted_idx, , drop = FALSE]
+
+# Final ordered heatmap
+pheatmap(
+  mat            = logcpmZ[, col_order, drop = FALSE],
+  show_colnames  = FALSE,
+  cluster_rows   = TRUE,
+  cluster_cols   = FALSE,
+  fontsize_row   = 12,
+  annotation_col = sorted_Metadata,
+  color = colorRampPalette(c(
+    "#54bebe", "#76c8c8", "#98d1d1",
+    "#badbdb", "#dedad2", "#e4bcad",
+    "#df979e", "#d7658b", "#c80064"
+  ))(100)
+)
+
+```
+
+####Extended Figure 4A
+```{r}
+# Define cell types, organs, and treatments to simplify iteration
+cell_types <- c("proNEU_preNEU","immNEU", "matNEU")
+organs <- c("Blood", "Bone Marrow", "Spleen")
+treatments <- c("PBS", "AMD")
+```
+
+###Comparing specific cell subsets
+```{r}
+Comparison <- sce_neutro
+```
+
+Assign Condition column using generalized function
+```{r}
+assign_condition <- function(organ, cell_type, treatment) {
+  paste0("Condition", substr(gsub(" ", "", organ), 1, 2), "_", cell_type, "_", treatment)
+}
+
+Comparison$Condition <- "m"  # Default value
+
+for (organ in organs) {
+  for (treatment in treatments) {
+    for (cell_type in cell_types) {
+      condition_value <- assign_condition(organ, cell_type, treatment)
+      subset_indices <- which(Comparison$Organ == organ & Comparison$Cell_type == cell_type & Comparison$Treatment == treatment)
+      Comparison$Condition[subset_indices] <- condition_value
+    }
+  }
+}
+```
+
+Aggregate across cells and compute percent expressed
+```{r}
+summed <- aggregateAcrossCells(Comparison, id = colData(Comparison)[, c("Mouse", "Condition")])
+
+#/ per gene calculate the number of cells per Organ that express it
+get_pexpr <- function(data, group, threshold=0, digits=2){
+  
+  if(ncol(data)!=length(group)) stop("ncol(data) != length(group)")
+  if(!is.numeric(threshold) | threshold < 0) stop("threshold must be numeric and > 0")
+  
+  datar <- (data>threshold) * 1
+  a <- base::rowsum(x=t(datar), group=group)
+  b <- as.numeric(table(group)[rownames(a)])
+  f <- base::round(100*t(apply(a, 2, function(x) x/b)), digits=digits)
+  f
+}
+
+percent_expressed <- get_pexpr(data = assay(Comparison), group = Comparison$Condition)
+```
+
+Subset genes that are expressed by at least 10% of the cells
+```{r}
+min_expression <- 10
+genes_to_use <- rownames(percent_expressed)[apply(percent_expressed, 1, function(row) all(row >= min_expression))]
+```
+
+Creating a new summed object and DGEList object
+```{r}
+summed.clean <- summed[genes_to_use,]
+y <- DGEList(counts(summed.clean), samples = colData(summed.clean))
+discarded <- summed.clean$ncells < 10
+y <- y[, !discarded]
+
+# Normalization
+y <- calcNormFactors(y)
+design <- model.matrix(~0 + Condition, y$samples)
+y <- estimateDisp(y, design)
+
+# Fit model
+fit <- glmQLFit(y, design, robust = TRUE)
+```
+
+Get DEGs, testing against a fold change
+```{r}
+contrasts <- makeContrasts(
+
+  ############################
+  ### Cross-organ PBS comparisons (matNEU)
+  ############################
+  ConditionConditionBl_matNEU_PBS - ConditionConditionSp_matNEU_PBS,
+  ConditionConditionBo_matNEU_PBS - ConditionConditionSp_matNEU_PBS,
+  ConditionConditionBo_matNEU_PBS - ConditionConditionSp_immNEU_PBS,
+  ConditionConditionBo_immNEU_PBS - ConditionConditionSp_immNEU_PBS,
+  ConditionConditionBo_immNEU_PBS - ConditionConditionSp_matNEU_PBS,
+
+  ############################
+  ### matNEU PBS vs AMD
+  ############################
+  ConditionConditionBl_matNEU_PBS - ConditionConditionBl_matNEU_AMD,
+  ConditionConditionBo_matNEU_PBS - ConditionConditionBo_matNEU_AMD,
+  ConditionConditionSp_matNEU_PBS - ConditionConditionSp_matNEU_AMD,
+
+  ############################
+  ### immNEU PBS vs AMD
+  ############################
+  ConditionConditionBo_immNEU_PBS - ConditionConditionBo_immNEU_AMD,
+  ConditionConditionSp_immNEU_PBS - ConditionConditionSp_immNEU_AMD,
+
+  ############################
+  ### proNEU/preNEU PBS vs AMD
+  ############################
+  ConditionConditionBl_immNEU_AMD - ConditionConditionBl_matNEU_AMD,
+  ConditionConditionBl_immNEU_AMD - ConditionConditionBo_immNEU_AMD,
+  ConditionConditionBl_immNEU_AMD - ConditionConditionBo_matNEU_AMD,
+
+  ConditionConditionBl_matNEU_AMD - ConditionConditionBo_immNEU_AMD,
+  ConditionConditionBl_matNEU_AMD - ConditionConditionBo_matNEU_AMD,
+
+  ConditionConditionBl_immNEU_AMD - ConditionConditionSp_immNEU_AMD,
+  ConditionConditionBl_immNEU_AMD - ConditionConditionSp_matNEU_AMD,
+
+  ConditionConditionBo_immNEU_AMD - ConditionConditionSp_immNEU_AMD,
+  ConditionConditionBo_matNEU_AMD - ConditionConditionSp_matNEU_AMD,
+  ConditionConditionBl_matNEU_AMD - ConditionConditionSp_matNEU_AMD,
+
+  ConditionConditionSp_matNEU_AMD - ConditionConditionSp_immNEU_AMD,
+
+  levels = colnames(design)
+)
+
+
+res <- sapply(colnames(contrasts), function(con) {
+  tt <- topTags(glmTreat(fit, contrast = contrasts[, con], lfc = log2(1.2)), n = Inf)$table
+  return(data.frame(Gene = rownames(tt), tt))
+}, simplify = FALSE)
+```
+
+Extract specific comparisons
+```{r}
+comparison_data_1 <- res[["ConditionConditionBl_immNEU_AMD - ConditionConditionSp_immNEU_AMD"]]
+
+comparison_data_2 <- res[["ConditionConditionBl_immNEU_AMD - ConditionConditionBl_matNEU_AMD"]]
+
+comparison_data_3 <- res[["ConditionConditionSp_matNEU_AMD - ConditionConditionSp_immNEU_AMD"]]
+
+comparison_data_4 <- res[["ConditionConditionBl_matNEU_AMD - ConditionConditionSp_matNEU_AMD"]]
+
+```
+
+###Create bar graph for upregulated and downregulated genes: Extended Figure 4A
+```{r}
+# Function to create bar data for upregulated and downregulated genes using FDR
+get_bar_data <- function(comparison_data) {
+  if (nrow(comparison_data) == 0) {
+    return(data.frame(
+      Direction = c("Upregulated", "Downregulated"),
+      Count = c(0, 0)
+    ))
+  }
+  
+  # Filter genes based on logFC and FDR criteria
+  upregulated_genes <- subset(comparison_data, logFC > 0.5 & FDR < 0.05)
+  downregulated_genes <- subset(comparison_data, logFC < -0.5 & FDR < 0.05)
+  
+  upregulated_count <- nrow(upregulated_genes)
+  downregulated_count <- nrow(downregulated_genes)
+  
+  return(data.frame(
+    Direction = c("Upregulated", "Downregulated"),
+    Count = c(upregulated_count, downregulated_count),
+    Comparison = rep(deparse(substitute(comparison_data)), 2)
+  ))
+}
+# Create bar data for each comparison
+bar_data_1 <- get_bar_data(comparison_data_1)
+bar_data_1$Comparison <- "Bl_immNEU_AMD vs Sp_immNEU_AMD"
+bar_data_2 <- get_bar_data(comparison_data_2)
+bar_data_2$Comparison <- "Bl_immNEU_AMD vs Bl_matNEU_AMD"
+bar_data_3 <- get_bar_data(comparison_data_3)
+bar_data_3$Comparison <- "Sp_matNEU_AMD vs Sp_immNEU_AMD"
+bar_data_4 <- get_bar_data(comparison_data_4)
+bar_data_4$Comparison <- "Bl_matNEU_AMD vs Sp_matNEU_AMD"
+
+# Combine all bar data
+combined_bar_data <- rbind(bar_data_1, bar_data_2, bar_data_3, bar_data_4)
+
+# Create a combined bar plot with shared y-axis
+ggplot(combined_bar_data, aes(x = Comparison, y = Count, fill = Direction)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_fill_manual(values = c("Upregulated" = "indianred", "Downregulated" = "dodgerblue2")) +
+  theme_classic(base_family = "Arial") +
+  theme(
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+       y = "Number of Genes",
+       fill = "Direction (logFC > 0.5, FDR < 0.05)") +
+  guides(fill = guide_legend(title = "Gene Regulation Direction")) +
+  annotate("text", x = 2.5, y = max(combined_bar_data$Count) + 5, label = "Cutoff: logFC > 0.5, FDR < 0.05", size = 5, hjust = 0.5)
+```
+
+###Trajectory analysis
+working on sce_annotated object
+load if necessary
+```{r}
+filename <- file.choose()
+sce <- readRDS(filename)
+```
+
+Preparing data
+```{r}
+
+# SUBSET AMD + neutrophil progenitors / subsets
+Selected <- sce_annotated[, sce_annotated$Treatment == "AMD"]
+Selected <- Selected[, Selected$Cell_type %in% c("proNEU_preNEU","immNEU","matNEU")]
+
+# FASTMNN BATCH CORRECTION
+Selected_corrected <- fastMNN(Selected, batch = Selected$Batch)
+
+# copy colData from original
+Selected_corrected$Organ      <- Selected$Organ
+Selected_corrected$Treatment  <- Selected$Treatment
+Selected_corrected$Mouse      <- Selected$Mouse
+Selected_corrected$nUMI       <- Selected$nUMI
+Selected_corrected$Lane       <- Selected$Lane
+Selected_corrected$Antibiotic <- Selected$Antibiotic
+Selected_corrected$sizeFactor <- Selected$sizeFactor
+Selected_corrected$Cell_type  <- Selected$Cell_type
+
+# restore raw counts and logcounts
+assay(Selected_corrected, "counts")    <- assay(Selected, "counts")
+assay(Selected_corrected, "logcounts") <- assay(Selected, "logcounts")
+
+# HVGs from original + PCA on reconstructed
+set.seed(1000)
+Selected <- logNormCounts(Selected)
+
+dec.sce <- modelGeneVar(Selected, block = Selected$Mouse)
+chosen <- getTopHVGs(dec.sce, prop = 0.1)
+
+set.seed(1458847)
+Selected_corrected <- runPCA(
+  Selected_corrected,
+  exprs_values = "reconstructed",
+  subset_row = chosen,
+  name = "PCA_HVGs"
+)
+
+set.seed(20398)
+Selected_corrected <- runUMAP(
+  Selected_corrected,
+  n_dimred = 10,
+  dimred = "corrected",
+  name = "UMAP_corrected"
+)
+
+# clustering
+set.seed(20300)
+Selected_corrected.g <- buildSNNGraph(
+  Selected_corrected,
+  k = 15, d = 10,
+  assay.type = "reconstructed"
+)
+Selected_corrected_clust <- igraph::cluster_louvain(Selected_corrected.g)$membership
+colLabels(Selected_corrected) <- factor(Selected_corrected_clust)
+
+# EXTRACT COUNTS AND METADATA
+logcounts <- t(as.matrix(assay(Selected_corrected, "logcounts")))
+counts    <- t(as.matrix(assay(Selected_corrected, "counts")))
+
+Cell_type <- as.matrix(Selected_corrected$Cell_type)
+Organ     <- as.matrix(Selected_corrected$Organ)
+Label     <- as.matrix(Selected_corrected$label)
+
+colnames(Cell_type) <- "Cell_type"
+colnames(Organ)     <- "Organ"
+colnames(Label)     <- "Label"
+
+Metadata <- cbind(Cell_type, Organ, Label)
+
+UMAP <- as.data.frame(
+  Selected_corrected@int_colData$reducedDims$UMAP_corrected
+)
+colnames(UMAP) <- c("UMAP_1", "UMAP_2")
+```
+
+Creating Trajectory
+```{r}
+# ROOT CELL DETECTION 
+maxStart <- retrieveCellInfo(
+  Selected_corrected, "Hist1h1b",
+  exprs_values = "logcounts"
+)$value
+maxStart <- as.matrix(maxStart)
+
+root_cell <- rownames(maxStart)[which.max(maxStart)]   # FIXED
+
+# CREATE dynwrap DATASET
+dataset <- wrap_expression(
+  expression = logcounts,
+  counts = counts
+)
+
+dataset <- add_grouping(dataset, Organ)
+
+dataset <- add_prior_information(
+  dataset,
+  start_id = root_cell
+)
+
+# RUN PAGA (R-native = works on ARM)
+model_paga_all_cells <- infer_trajectory(
+  dataset,
+  ti_paga(),   # << FIXED, no Docker
+  give_priors = c("start_id")
+)
+
+#rooting
+model_paga_all_cells <- model_paga_all_cells %>%
+  add_root(root_milestone_id = "9")
+```
+
+Visualization
+```{r}
+#Visualization
+
+plot_dimred(
+  model_paga_all_cells, 
+  expression_source = dataset$expression,
+  hex_cells = ifelse(length(model_paga_all_cells$cell_ids) > 20000, 100, TRUE), 
+  label_milestones = TRUE)
+
+#FIgure 4A
+plot_dimred(model_paga_all_cells, "pseudotime", pseudotime = calculate_pseudotime(model_paga_all_cells), label_milestones = TRUE) + ggtitle("Pseudotime")#Paga_tree
+```
+
+Safe subsetting of dynwrap / dyno objects
+```{r}
+sbst_cells_dynwrap <- function(dataset, selected_cells = NULL) {
+  # basic checks
+  if (is.null(selected_cells)) {
+    stop("selected_cells must be a logical vector.")
+  }
+  if (!is.logical(selected_cells)) {
+    stop("selected_cells must be logical (TRUE/FALSE).")
+  }
+  if (length(selected_cells) != length(dataset[["cell_ids"]])) {
+    stop("selected_cells must have the same length as dataset$cell_ids.")
+  }
+
+  new_dataset <- dataset
+
+  # core vectors
+  new_dataset[["cell_ids"]]   <- dataset[["cell_ids"]][selected_cells]
+  new_dataset[["cell_info"]]  <- dataset[["cell_info"]][selected_cells, , drop = FALSE]
+
+  ## trajectory-related slots
+  if ("dynwrap::with_trajectory" %in% attr(dataset, "class")) {
+    new_dataset[["progressions"]] <- dataset[["progressions"]][selected_cells, , drop = FALSE]
+
+    if (length(dataset[["milestone_percentages"]]) != 0) {
+      # keep milestone_percentages only for the selected cells
+      cell_id_selected <- new_dataset[["cell_ids"]]
+      cell_id_mp       <- dataset[["milestone_percentages"]]$cell_id
+      keep_mp          <- cell_id_mp %in% cell_id_selected
+      new_dataset[["milestone_percentages"]] <- dataset[["milestone_percentages"]][keep_mp, , drop = FALSE]
+    }
+  }
+
+  ## dimred
+  if ("dynwrap::with_dimred" %in% attr(dataset, "class")) {
+    new_dataset[["dimred"]] <- dataset[["dimred"]][selected_cells, , drop = FALSE]
+  }
+
+  ## expression
+  if ("dynwrap::with_expression" %in% attr(dataset, "class")) {
+    new_dataset[["counts"]]     <- dataset[["counts"]][selected_cells, , drop = FALSE]
+    new_dataset[["expression"]] <- dataset[["expression"]][selected_cells, , drop = FALSE]
+  }
+
+  ## grouping
+  if ("dynwrap::with_grouping" %in% attr(dataset, "class")) {
+    if (is.data.frame(dataset[["grouping"]])) {
+      new_dataset[["grouping"]] <- dataset[["grouping"]][selected_cells, , drop = FALSE]
+    } else {
+      new_dataset[["grouping"]] <- dataset[["grouping"]][selected_cells]
+    }
+  }
+
+  new_dataset
+}
+
+```
+
+Subsetting paga objects by organ
+```{r}
+# spleen
+new_dataset_spleen <- sbst_cells_dynwrap(dataset,            selected_cells = dataset$grouping == "Spleen")
+new_model_spleen   <- sbst_cells_dynwrap(model_paga_all_cells, selected_cells = dataset$grouping == "Spleen")
+
+# bone marrow
+new_dataset_BM <- sbst_cells_dynwrap(dataset,            selected_cells = dataset$grouping == "Bone Marrow")
+new_model_BM   <- sbst_cells_dynwrap(model_paga_all_cells, selected_cells = dataset$grouping == "Bone Marrow")
+
+# blood
+new_dataset_BL <- sbst_cells_dynwrap(dataset,            selected_cells = dataset$grouping == "Blood")
+new_model_BL   <- sbst_cells_dynwrap(model_paga_all_cells, selected_cells = dataset$grouping == "Blood")
+
+# blood + spleen
+new_dataset_SP_BL <- sbst_cells_dynwrap(dataset,            selected_cells = dataset$grouping %in% c("Blood", "Spleen"))
+new_model_SP_BL   <- sbst_cells_dynwrap(model_paga_all_cells, selected_cells = dataset$grouping %in% c("Blood", "Spleen"))
+```
+
+####Extended Figure 9A: Heatmaps
+```{r}
+## ---- Bone Marrow heatmap ----
+
+BM_feature_importances <- dynfeature::calculate_overall_feature_importance(
+  new_model_BM,
+  expression_source = new_dataset_BM$expression
+)
+
+features_BM <- BM_feature_importances %>%
+  dplyr::top_n(60, importance) %>%
+  dplyr::pull(feature_id)
+
+set.seed(20300)
+plot_heatmap(
+  new_dataset_BM,
+  expression_source = new_dataset_BM$expression,
+  features_oi = features_BM
+)
+
+
+## ---- Spleen heatmap ----
+
+SP_feature_importances <- dynfeature::calculate_overall_feature_importance(
+  new_model_spleen,
+  expression_source = new_dataset_spleen$expression
+)
+
+features_SP <- SP_feature_importances %>%
+  dplyr::top_n(60, importance) %>%
+  dplyr::pull(feature_id)
+
+set.seed(20300)
+plot_heatmap(
+  new_dataset_spleen,
+  expression_source = new_dataset_spleen$expression,
+  features_oi = features_SP
+)
+```
+
+####Figure 4B
+```{r}
+## add PAGA dimred back into SCE
+dimred_paga <- model_paga_all_cells[["dimred"]]
+reducedDim(Selected_corrected, "dimred_paga") <- dimred_paga
+
+## reclustering (if you want clusters in PAGA space)
+set.seed(20300)
+Selected.g <- buildSNNGraph(
+  Selected_corrected,
+  k = 15, d = 10,
+  use.dimred = NULL,
+  assay.type = "reconstructed"
+)
+Selected_clust_louvain <- igraph::cluster_louvain(Selected.g)$membership
+colLabels(Selected_corrected) <- factor(Selected_clust_louvain)
+
+## UMAP-like plot in PAGA space with labels
+set.seed(20300)
+plotReducedDim(
+  Selected_corrected,
+  dimred    = "dimred_paga",
+  colour_by = "label",
+  text_by   = "label",
+  point_size = 4
+)
+
+## Density plot across organs (Figure 4B)
+set.seed(1234)
+ggcells(Selected_corrected, mapping = aes(x = dimred_paga.1, y = dimred_paga.2)) +
+  stat_density_2d(
+    geom   = "raster",
+    aes(fill = after_stat(ndensity)),
+    n      = 200,
+    contour = FALSE
+  ) +
+  scale_fill_viridis_c(option = "H") +
+  facet_grid(~ Organ) +
+  theme_classic() +
+  theme(panel.grid = element_blank()) +
+  xlim(-13000, 10000) +
+  ylim(-22000, 10000)
+```
+
+###Velocity calculation
+```{r}
+# Highly variable genes
+dec <- modelGeneVar(sce_scvelo)
+top.hvgs <- getTopHVGs(dec, prop = 0.2)
+
+# Running velocity estimation
+sce_scvelo <- velociraptor::scvelo(
+  sce_scvelo,
+  use.dimred = "PCA_HVGs",
+  subset.row = top.hvgs,
+  mode = "dynamical",
+  assay.X = "counts",
+  assay.spliced = "spliced",
+  assay.unspliced = "unspliced"
+)
+
+# projecting onto umap
+## warning: change to the correct UMAP name
+sce_scvelo$velocity_pseudotime <- velo.out$velocity_pseudotime
+embedded = embedVelocity(reducedDim(sce_scvelo, "dimred_paga"), velo.out) ## change
+grid.df = gridVectors(sce_scvelo, embedded, use.dimred = "dimred_paga")
+```
+
+####Figure 4C
+```{r}
+### Add clustering labels
+sce_scvelo$label_2 <- Selected_new$label
+
+### Create new column
+sce_scvelo$Enrichment_cell_types <- NA_character_
+
+### Helper function
+assign_type <- function(labels, organs, new_label) {
+  idx <- sce_scvelo$label_2 %in% labels & sce_scvelo$Organ %in% organs
+  sce_scvelo$Enrichment_cell_types[idx] <- new_label
+}
+
+### Assign categories
+
+# ----------------------
+# NeuP / sNeuP
+# ----------------------
+assign_type(labels = c("10", "9"), organs = c("Spleen", "Blood"),      new_label = "sNeuP")
+assign_type(labels = c("10", "9"), organs = c("Bone Marrow"),          new_label = "NeuP")
+
+# ----------------------
+# Neu1 / Neu2 / sNeu / sNeu2
+# ----------------------
+assign_type(labels = c("2", "8", "3"), organs = c("Spleen", "Blood"),  new_label = "sNeu")
+assign_type(labels = c("6", "7"),      organs = c("Spleen"),           new_label = "sNeu2")
+
+assign_type(labels = c("2", "8", "3"), organs = c("Bone Marrow"),      new_label = "Neu1")
+assign_type(labels = c("6", "7"),      organs = c("Bone Marrow", 
+                                                  "Blood"),             new_label = "Neu2")
+
+# ----------------------
+# Neu3 across all organs
+# ----------------------
+assign_type(labels = c("4", "1", "5"), organs = c("Bone Marrow",
+                                                  "Blood",
+                                                  "Spleen"),            new_label = "Neu3")
+
+### Convert to factor with your chosen order
+sce_scvelo$Enrichment_cell_types <- factor(
+  sce_scvelo$Enrichment_cell_types,
+  levels = c("sNeuP", "NeuP", "sNeu", "sNeu2", "Neu1", "Neu2", "Neu3")
+)
+```
+
+####Abundances for Figure 4D
+```{r}
+#Set folder
+#We create a table containing:
+abundances <- table(sce_scvelo$Organ, sce_scvelo$Mouse, sce_scvelo$Enrichment_cell_types) 
+abundances <- unclass(abundances) 
+write.csv(abundances, "abundances_all_cells_enrichment_cell_types.csv")
+```
+
+###Fast GSE
+####Analysis of neutrophil progenitors
+File: sce_annotated
+```{r}
+filename <- file.choose()
+sce <- readRDS(filename)
+```
+
+Load SCE and gene sets
+```{r}
+library(escape)
+library(fgsea)
+library(data.table)
+library(ggplot2)
+suppressPackageStartupMessages(library(dittoSeq))
+
+## ---- load SCE (all cells, not batch-corrected) ----
+filename <- file.choose()
+sce <- readRDS(filename)
+
+## ---- gene sets ----
+GS.hallmark <- getGeneSets(species = "Mus musculus", library = "H")
+GS.C2       <- getGeneSets(species = "Mus musculus", library = "C2", subcategory = "REACTOME")
+GS.C5       <- getGeneSets(species = "Mus musculus", library = "C5", subcategory = "BP")
+
+## subset C5 to innate/bacterial terms
+keywords <- c("INNATE", "BACTERIUM", "ANTIBACTERIAL", "BACTERIAL")
+pattern  <- paste(keywords, collapse = "|")
+
+matching_indices <- grep(pattern, names(GS.C5), ignore.case = TRUE)
+GS.C5_subset     <- GS.C5[matching_indices]
+length(GS.C5_subset)
+
+```
+
+Run UCell / escape
+```{r}
+## Hallmark
+ES.hallmark <- enrichIt(
+  obj      = sce,
+  gene.sets = GS.hallmark,
+  method   = "UCell",
+  groups   = 1000,
+  cores    = 2,
+  maxRank  = 3000,
+  min.size = NULL
+)
+
+## Reactome C2
+ES.reactome <- enrichIt(
+  obj       = sce,
+  gene.sets = GS.C2,
+  method    = "UCell",
+  groups    = 1000,
+  cores     = 2,
+  maxRank   = 3000,
+  min.size  = NULL
+)
+
+## Your own gene set collection (assumes Gene_Set_Collections already in env)
+ES.own <- enrichIt(
+  obj       = sce,
+  gene.sets = Gene_Set_Collections,
+  method    = "UCell",
+  groups    = 1000,
+  cores     = 2,
+  maxRank   = 3000,
+  min.size  = NULL
+)
+
+## C5 subset into an altExp
+sce <- runEscape(
+  sce,
+  gene.sets      = GS.C5_subset,
+  method         = "UCell",
+  groups         = 1000,
+  cores          = 2,
+  maxRank        = 3000,
+  min.size       = NULL,
+  new.assay.name = "GS.C5_subset"
+)
+```
+
+Add enrichment scores into colData(sce)
+```{r}
+## current colData as DataFrame
+cd <- colData(sce)
+
+## add Hallmark scores
+ES.hallmark <- ES.hallmark[colnames(sce), , drop = FALSE]
+cd <- cbind(cd, DataFrame(ES.hallmark))
+
+## add Reactome scores
+ES.reactome <- ES.reactome[colnames(sce), , drop = FALSE]
+cd <- cbind(cd, DataFrame(ES.reactome))
+
+## add own signatures
+ES.own <- ES.own[colnames(sce), , drop = FALSE]
+cd <- cbind(cd, DataFrame(ES.own))
+
+## add GS.C5_subset scores from altExp
+sce_c5 <- altExp(sce, "GS.C5_subset")
+c5_mat <- t(as.matrix(assay(sce_c5, "GS.C5_subset")))   # rows = cells, cols = gene sets
+c5_mat <- c5_mat[colnames(sce), , drop = FALSE]
+cd <- cbind(cd, DataFrame(c5_mat))
+
+## write back
+colData(sce) <- cd
+```
+
+```{r}
+
+## 1. Extract and filter metadata + scores
+df <- colData(sce)[, c(
+  "REACTOME_INTERFERON_ALPHA_BETA_SIGNALING",
+  "REACTOME_INTERFERON_GAMMA_SIGNALING",
+  "REACTOME_BETA_CATENIN_INDEPENDENT_WNT_SIGNALING",
+  "REACTOME_INTERLEUKIN_6_SIGNALING",
+  "REACTOME_SIGNALING_BY_CSF3_G_CSF",
+  "REACTOME_TNF_SIGNALING",
+  "REACTOME_INTERLEUKIN_1_SIGNALING",
+  "REACTOME_TGF_BETA_RECEPTOR_SIGNALING_ACTIVATES_SMADS",
+  "REACTOME_WNT_LIGAND_BIOGENESIS_AND_TRAFFICKING",
+  "REACTOME_STAT5_ACTIVATION",
+  "REACTOME_STAT3_NUCLEAR_EVENTS_DOWNSTREAM_OF_ALK_SIGNALING",
+  "Organ", "Treatment", "Antibiotic", "Mouse", "Cell_type"
+), drop = FALSE] |>
+  as.data.frame() |>
+  filter(
+    Treatment_02 == "No_treatment_02",
+    Treatment  == "AMD",
+    Organ %in% c("Bone Marrow", "Spleen"),
+    Cell_type == "proNEU_preNEU"   # <- fix here
+  )
+
+## 2. List of pathways to test
+pathway_columns <- c(
+  "REACTOME_INTERFERON_ALPHA_BETA_SIGNALING",
+  "REACTOME_INTERFERON_GAMMA_SIGNALING",
+  "REACTOME_BETA_CATENIN_INDEPENDENT_WNT_SIGNALING",
+  "REACTOME_INTERLEUKIN_6_SIGNALING",
+  "REACTOME_SIGNALING_BY_CSF3_G_CSF",
+  "REACTOME_TNF_SIGNALING",
+  "REACTOME_INTERLEUKIN_1_SIGNALING",
+  "REACTOME_TGF_BETA_RECEPTOR_SIGNALING_ACTIVATES_SMADS",
+  "REACTOME_WNT_LIGAND_BIOGENESIS_AND_TRAFFICKING",
+  "REACTOME_STAT5_ACTIVATION",
+  "REACTOME_STAT3_NUCLEAR_EVENTS_DOWNSTREAM_OF_ALK_SIGNALING"
+)
+
+## 3. Z-score each pathway (within these proNEU_preNEU cells)
+df_z <- df |>
+  mutate(across(
+    all_of(pathway_columns),
+    ~ (.-mean(., na.rm = TRUE)) / sd(., na.rm = TRUE),
+    .names = "z_{col}"
+  ))
+
+## 4. Wilcoxon tests Bone Marrow vs Spleen for each pathway
+wilcox_results <- map_dfr(pathway_columns, function(pw) {
+  # use z-scored column
+  zcol <- paste0("z_", pw)
+  
+  bm_vals     <- df_z |> filter(Organ == "Bone Marrow") |> pull(all_of(zcol))
+  spleen_vals <- df_z |> filter(Organ == "Spleen")      |> pull(all_of(zcol))
+  
+  # guard against all-NA or empty groups
+  if (length(na.omit(bm_vals)) == 0 || length(na.omit(spleen_vals)) == 0) {
+    return(tibble(
+      pathway = pw,
+      p_value = NA_real_,
+      W       = NA_real_,
+      median_BM     = NA_real_,
+      median_Spleen = NA_real_,
+      effect_median = NA_real_
+    ))
+  }
+  
+  test <- wilcox.test(bm_vals, spleen_vals, exact = FALSE)
+  
+  tibble(
+    pathway       = pw,
+    p_value       = test$p.value,
+    W             = unname(test$statistic),
+    median_BM     = median(bm_vals, na.rm = TRUE),
+    median_Spleen = median(spleen_vals, na.rm = TRUE),
+    effect_median = median_BM - median_Spleen
+  )
+})
+
+## 5. Multiple testing correction
+wilcox_results <- wilcox_results |>
+  mutate(p_adj = p.adjust(p_value, method = "BH")) |>
+  arrange(p_adj)
+
+wilcox_results
+```
+
+####Plotting Figure 6B
+```{r}
+library(dplyr)
+library(ggplot2)
+
+## 1. Convert logFC_results_averaged to a tidy data frame
+logFC_df_averaged <- data.frame(
+  Pathway = names(logFC_results_averaged),
+  logFC   = as.numeric(logFC_results_averaged),
+  row.names = NULL
+)
+
+## 2. Pathways of interest (Reactome names)
+signaling_pathways <- c(
+  "REACTOME_INTERFERON_ALPHA_BETA_SIGNALING",
+  "REACTOME_INTERFERON_GAMMA_SIGNALING",
+  "REACTOME_BETA_CATENIN_INDEPENDENT_WNT_SIGNALING",
+  "REACTOME_INTERLEUKIN_6_SIGNALING",
+  "REACTOME_SIGNALING_BY_CSF3_G_CSF",
+  "REACTOME_TNF_SIGNALING",
+  "REACTOME_INTERLEUKIN_1_SIGNALING",
+  "REACTOME_TGF_BETA_RECEPTOR_SIGNALING_ACTIVATES_SMADS",
+  "REACTOME_WNT_LIGAND_BIOGENESIS_AND_TRAFFICKING",
+  "REACTOME_STAT5_ACTIVATION",
+  "REACTOME_STAT3_NUCLEAR_EVENTS_DOWNSTREAM_OF_ALK_SIGNALING"
+)
+
+## 3. Subset and create nicer labels
+logFC_df_averaged_signaling <- logFC_df_averaged %>%
+  filter(Pathway %in% signaling_pathways) %>%
+  mutate(
+    Pathway_label = dplyr::recode(
+      Pathway,
+      "REACTOME_INTERFERON_ALPHA_BETA_SIGNALING" =
+        "INTERFERON_ALPHA_BETA_SIGNALING",
+      "REACTOME_INTERFERON_GAMMA_SIGNALING" =
+        "INTERFERON_GAMMA_SIGNALING",
+      "REACTOME_BETA_CATENIN_INDEPENDENT_WNT_SIGNALING" =
+        "BETA_CATENIN_INDEPENDENT_WNT_SIGNALING",
+      "REACTOME_INTERLEUKIN_6_SIGNALING" =
+        "INTERLEUKIN_6_SIGNALING",
+      "REACTOME_SIGNALING_BY_CSF3_G_CSF" =
+        "SIGNALING_BY_CSF3_G_CSF",
+      "REACTOME_TNF_SIGNALING" =
+        "NF_SIGNALING",
+      "REACTOME_INTERLEUKIN_1_SIGNALING" =
+        "INTERLEUKIN_1_SIGNALING",
+      "REACTOME_TGF_BETA_RECEPTOR_SIGNALING_ACTIVATES_SMADS" =
+        "TGF_BETA_RECEPTOR_SIGNALING_ACTIVATES_SMADS",
+      "REACTOME_WNT_LIGAND_BIOGENESIS_AND_TRAFFICKING" =
+        "WNT_LIGAND_BIOGENESIS_AND_TRAFFICKING",
+      "REACTOME_STAT5_ACTIVATION" =
+        "STAT5_ACTIVATION",
+      "REACTOME_STAT3_NUCLEAR_EVENTS_DOWNSTREAM_OF_ALK_SIGNALING" =
+        "STAT3_NUCLEAR_EVENTS_DOWNSTREAM_OF_ALK_SIGNALING"
+    )
+  ) %>%
+  ## Order pathways by logFC (top/bottom in the plot)
+  arrange(logFC) %>%
+  mutate(
+    Pathway_label = factor(Pathway_label, levels = Pathway_label)
+  )
+
+## 4. Plot
+ggplot(
+  logFC_df_averaged_signaling,
+  aes(x = Pathway_label, y = logFC, fill = logFC > 0)
+) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(
+    values = c("FALSE" = "lightblue", "TRUE" = "chocolate2"),
+    guide  = "none"
+  ) +
+  coord_flip() +
+  labs(
+    x = "Pathway",
+    y = "Log fold change (logFC)"
+  ) +
+  ylim(-0.15, 0.15) +  # adjust/remove if your values exceed this range
+  theme_classic(base_family = "Arial", base_size = 12) +
+  theme(
+    axis.text.x  = element_text(angle = 90, hjust = 1),
+    axis.title.x = element_text(),
+    axis.text    = element_text(face = "plain", size = 12, color = "black")
+  )
+
+```
+
+###Analysis of immature and mature neutrophils
+File: sce_annotated
+```{r}
+filename <- file.choose()
+scNeutro <- readRDS(filename)
+```
+
+```{r}
+library(SingleCellExperiment)
+library(batchelor)
+
+## 1. Subset cells of interest -----------------------------------------------
+
+scNeutro_clean <- scNeutro[, 
+    scNeutro$Cell_type      %in% c("immNEU", "matNEU") &
+    scNeutro$Treatment_02   == "No_treatment_02"        &
+    scNeutro$Treatment      == "AMD"
+]
+
+## 2. Batch correction with fastMNN -----------------------------------------
+
+set.seed(123)  # for reproducibility
+
+sce_neutro_corrected <- fastMNN(
+    scNeutro_clean,
+    batch      = scNeutro_clean$Batch,
+    assay.type = "logcounts"
+)
+
+## 3. Transfer metadata and assays ------------------------------------------
+## (fastMNN already carries colData, but we make it explicit and complete)
+
+colData(sce_neutro_corrected) <- colData(scNeutro_clean)
+
+assays(sce_neutro_corrected)[c("counts", "logcounts")] <-
+    assays(scNeutro_clean)[c("counts", "logcounts")]
+
+```
+
+```{r}
+## 1. Library-size normalisation ---------------------------------------------
+
+set.seed(100)
+sce_neutro_corrected <- logNormCounts(sce_neutro_corrected)
+# log-normalised values stored in assay(sce_neutro_corrected, "logcounts")
+
+## 2. Per-gene variance modelling (blocking by mouse) ------------------------
+
+dec.sce <- modelGeneVar(
+  sce_neutro_corrected,
+  block = sce_neutro_corrected$Mouse
+)
+
+# Highly variable genes (adjust prop / n as needed)
+hvgs <- getTopHVGs(dec.sce, prop = 0.1)  # e.g. top 10% most variable genes
+
+## 3. PCA on MNN-corrected expression ----------------------------------------
+## fastMNN stores the corrected expression in the "reconstructed" assay
+
+set.seed(1458847)
+sce_neutro_corrected <- runPCA(
+  sce_neutro_corrected,
+  exprs_values = "reconstructed",  # MNN-corrected expression
+  subset_row   = hvgs,
+  ncomponents  = 20,
+  name         = "PCA_HVGs"
+)
+
+## 4. UMAP on corrected PCA space --------------------------------------------
+
+set.seed(20398)
+sce_neutro_corrected <- runUMAP(
+  sce_neutro_corrected,
+  dimred    = "PCA_HVGs",
+  n_dimred  = 20,
+  name      = "UMAP_corrected"
+)
+
+## 5. Graph-based clustering on corrected PCA --------------------------------
+
+set.seed(20300)
+g <- buildSNNGraph(
+  sce_neutro_corrected,
+  use.dimred = "PCA_HVGs",
+  k          = 15
+)
+cl <- igraph::cluster_louvain(g)$membership
+colLabels(sce_neutro_corrected) <- factor(cl)
+
+```
+
+####Extended Figure 11A
+```{r}
+## UMAP plot coloured by cluster ------------------------------------------
+
+set.seed(20300)
+plotReducedDim(
+  sce_neutro_corrected,
+  dimred     = "UMAP_corrected",
+  colour_by  = "label",
+  text_by    = "label",
+  point_size = 2.5
+)
+
+## UMAP plot coloured by cluster ------------------------------------------
+
+set.seed(20300)
+plotReducedDim(
+  sce_neutro_corrected,
+  dimred     = "UMAP_corrected",
+  colour_by  = "Cxcr2",
+  point_size = 2.5
+)
+```
+
+####Heatmap 
+```{r}
+# Aggregate per label (cluster) and mouse
+summed <- aggregateAcrossCells(
+  sce_neutro_corrected,
+  id = colData(sce_neutro_corrected)[, c("label", "Mouse")]
+)
+
+summed$ncells
+
+#2. Function to compute % of cells expressing each gene
+get_pexpr <- function(data, group, threshold = 0, digits = 2) {
+  if (ncol(data) != length(group)) {
+    stop("ncol(data) != length(group)")
+  }
+  if (!is.numeric(threshold) || threshold < 0) {
+    stop("threshold must be numeric and >= 0")
+  }
+  
+  # binary expression matrix
+  datar <- (data > threshold) * 1L
+  
+  # sum per group (rows = groups, cols = genes)
+  a <- base::rowsum(x = t(datar), group = group)
+  
+  # number of cells per group
+  b <- as.numeric(table(group)[rownames(a)])
+  
+  # percentage of expressing cells per group (genes x groups)
+  f <- 100 * t(apply(a, 2, function(x) x / b))
+  round(f, digits = digits)
+}
+
+
+percent_expressed <- get_pexpr(
+  data  = assay(sce_neutro_corrected, "counts"),
+  group = sce_neutro_corrected$label
+)
+
+# Remove duplicated columns if they exist
+percent_expressed <- percent_expressed[, !duplicated(colnames(percent_expressed)), drop = FALSE]
+
+# Define and enforce custom cluster order
+cluster_order <- c("2", "3", "6", "5", "4", "1")
+
+# Ensure columns follow this order
+percent_expressed <- percent_expressed[, cluster_order, drop = FALSE]
+
+# Rename columns to cluster labels for readability
+colnames(percent_expressed) <- paste0("Cluster_", seq_along(cluster_order))
+
+
+#3. Select genes expressed in ≥10% of cells in all clusters
+p <- as.data.frame(percent_expressed)
+
+genes_to_use <- rownames(
+  dplyr::filter(
+    p,
+    Cluster_1 >= 10,
+    Cluster_2 >= 10,
+    Cluster_3 >= 10,
+    Cluster_4 >= 10,
+    Cluster_5 >= 10,
+    Cluster_6 >= 10
+  )
+)
+
+# Subset summed object to these genes
+summed_clean <- summed[genes_to_use, ]
+
+```
+
+```{r}
+#4. edgeR setup on cluster-level summed counts
+# Create DGEList. Use the 'counts' assay explicitly.
+y <- DGEList(
+  counts  = assay(summed_clean, "counts"),
+  samples = as.data.frame(colData(summed_clean))
+)
+
+# Filter out samples based on ncells (set threshold appropriately)
+discarded <- summed_clean$ncells < 0  # <-- probably you want something like < 20
+y <- y[, !discarded]
+summed_clean <- summed_clean[, !discarded]  # IMPORTANT: keep these in sync
+
+summary(discarded)
+
+# Normalisation
+y <- calcNormFactors(y)
+
+#5. Design, dispersion, model fitting
+# Design matrix (one column per cluster label)
+design <- model.matrix(~ 0 + label, data = y$samples)
+colnames(design)  # should be label1, label2, ... label6
+
+# Dispersion estimation
+y <- estimateDisp(y, design)
+
+# Fit GLM QL model
+fit <- glmQLFit(y, design, robust = TRUE)
+
+#6. Contrasts (pairwise between clusters)
+contrasts <- makeContrasts(
+  label1_vs_label2 = label1 - label2,
+  label1_vs_label3 = label1 - label3,
+  label1_vs_label4 = label1 - label4,
+  label1_vs_label5 = label1 - label5,
+  label1_vs_label6 = label1 - label6,
+
+  label2_vs_label3 = label2 - label3,
+  label2_vs_label4 = label2 - label4,
+  label2_vs_label5 = label2 - label5,
+  label2_vs_label6 = label2 - label6,
+
+  label3_vs_label4 = label3 - label4,
+  label3_vs_label5 = label3 - label5,
+  label3_vs_label6 = label3 - label6,
+
+  label4_vs_label5 = label4 - label5,
+  label4_vs_label6 = label4 - label6,
+
+  label5_vs_label6 = label5 - label6,
+  levels = design
+)
+
+#7. DEG tables → ranked DEGs → signatures
+# Test against fold change threshold (log2(1.5))
+res <- sapply(colnames(contrasts), function(con) {
+  tt <- topTags(
+    glmTreat(fit, contrast = contrasts[, con], lfc = log2(1.5)),
+    n = Inf
+  )$table
+  
+  data.frame(Gene = rownames(tt), tt, row.names = NULL)
+}, simplify = FALSE)
+
+# Rank DEGs
+ranked <- RankDEGs(
+  res,
+  delim            = "_vs_",
+  signif.column    = "FDR",
+  signif.threshold = 0.05,
+  effect.column    = "logFC",
+  effect.threshold = 0,
+  gene.column      = "Gene",
+  rnk.column       = "PValue",
+  rnk.method       = "increasing"
+)
+
+# Create gene signatures (top 10 genes, present in >=70% of contrasts)
+signatures <- CreateGeneSignatures(
+  ranked   = ranked,
+  keep.n   = 10,
+  min.prop = 0.70
+)
+
+lengths(signatures)
+```
+
+```{r}
+#8. Heatmap of scaled log-CPM for signature genes
+logcpm <- edgeR::cpm(y, log = TRUE, prior.count = 1)
+
+# Use only unique signature genes
+sig_genes <- unique(unlist(signatures))
+logcpm_sig <- logcpm[sig_genes, ]
+
+# Scale per gene (z-score)
+logcpmZ <- t(scale(t(logcpm_sig)))
+
+# Trim extremes (5th and 95th percentiles)
+q_upper <- quantile(logcpmZ, 0.95)
+q_lower <- quantile(logcpmZ, 0.05)
+
+logcpmZ[logcpmZ > q_upper] <- q_upper
+logcpmZ[logcpmZ < q_lower] <- q_lower
+
+# Metadata: cluster label per sample (from y$samples)
+Metadata <- data.frame(
+  Cluster = y$samples$label,
+  row.names = colnames(logcpmZ)
+)
+
+# Order clusters using your custom order
+custom_order <- c("2", "3", "6", "5", "4", "1")
+Metadata$Cluster <- factor(Metadata$Cluster, levels = custom_order)
+
+# Column order in the heatmap: by cluster
+col_order <- order(Metadata$Cluster)
+
+# Final annotation data.frame, ordered
+ann_col <- Metadata[col_order, , drop = FALSE]
+
+# Custom colors for clusters (optional)
+custom_colors <- c(
+  "2" = "lightgray",
+  "3" = "lightblue",
+  "6" = "palevioletred1",
+  "5" = "chocolate3",
+  "4" = "brown3",
+  "1" = "brown4"
+)
+
+annotation_colors <- list(Cluster = custom_colors)
+
+pheatmap(
+  mat            = logcpmZ[, col_order],
+  show_colnames  = FALSE,
+  cluster_rows   = FALSE,
+  cluster_cols   = FALSE,
+  fontsize_row   = 6,
+  annotation_col = ann_col,
+  annotation_colors = annotation_colors,
+  color = colorRampPalette(c(
+    "#54bebe", "#76c8c8", "#98d1d1", "#badbdb",
+    "#dedad2", "#e4bcad", "#df979e", "#d7658b", "#c80064"
+  ))(100)
+)
+
+```
+
+#### Run Escape / UCell on each gene set collection
+```{r}
+set.seed(1)  # for reproducibility of internal sampling, if any
+
+# Hallmark
+sce_neutro_corrected <- runEscape(
+  sce_neutro_corrected,
+  gene.sets      = GS.hallmark,
+  method         = "UCell",
+  groups         = 1000,
+  cores          = 2,
+  maxRank        = 3000,
+  min.size       = NULL,
+  new.assay.name = "GS.hallmark"
+)
+
+# C2 REACTOME
+sce_neutro_corrected <- runEscape(
+  sce_neutro_corrected,
+  gene.sets      = GS.C2,
+  method         = "UCell",
+  groups         = 1000,
+  cores          = 2,
+  maxRank        = 3000,
+  min.size       = NULL,
+  new.assay.name = "GS.C2"
+)
+
+# Custom collection (Gene_Set_Collections)
+sce_neutro_corrected <- runEscape(
+  sce_neutro_corrected,
+  gene.sets      = Gene_Set_Collections,
+  method         = "UCell",
+  groups         = 1000,
+  cores          = 2,
+  maxRank        = 3000,
+  min.size       = NULL,
+  new.assay.name = "Gene_Set_Collections"
+)
+
+# C5 subset
+sce_neutro_corrected <- runEscape(
+  sce_neutro_corrected,
+  gene.sets      = GS.C5_subset,
+  method         = "UCell",
+  groups         = 1000,
+  cores          = 2,
+  maxRank        = 3000,
+  min.size       = NULL,
+  new.assay.name = "GS.C5_subset"
+)
+
+```
+
+```{r}
+# Helper: extract UCell/ESCAPE scores from an altExp and return cell × geneset
+get_escape_scores <- function(sce, alt_name, assay_name = alt_name) {
+  ae  <- altExp(sce, alt_name)          # get the altExp by name
+  mat <- assay(ae, assay_name)          # genesets × cells matrix
+  as.data.frame(t(mat))                 # cells × genesets
+}
+
+GS_Hallmark_columns        <- get_escape_scores(sce_neutro_corrected, "GS.hallmark")
+GS.C2_columns              <- get_escape_scores(sce_neutro_corrected, "GS.C2")
+Gene_Set_Collections_cols  <- get_escape_scores(sce_neutro_corrected, "Gene_Set_Collections")
+GS.C5_subset_columns       <- get_escape_scores(sce_neutro_corrected, "GS.C5_subset")
+
+# Optionally make names syntactically safe
+colnames(GS_Hallmark_columns)        <- make.names(colnames(GS_Hallmark_columns))
+colnames(GS.C2_columns)              <- make.names(colnames(GS.C2_columns))
+colnames(Gene_Set_Collections_cols)  <- make.names(colnames(Gene_Set_Collections_cols))
+colnames(GS.C5_subset_columns)       <- make.names(colnames(GS.C5_subset_columns))
+
+# Combine with existing colData
+sce_2 <- sce_neutro_corrected
+
+colData(sce_2) <- cbind(
+  colData(sce_2),
+  DataFrame(GS_Hallmark_columns),
+  DataFrame(GS.C2_columns),
+  DataFrame(Gene_Set_Collections_cols),
+  DataFrame(GS.C5_subset_columns)
+)
+```
+
+```{r}
+df <- as.data.frame(
+  colData(sce_2)[, c(
+    "NETosis",
+    "Neutrophil_activation",
+    "Chemotactic_receptors",
+    "Adhesion_molecules",
+    "ROS_production",
+    "GOBP.DEFENSE.RESPONSE.TO.BACTERIUM",
+    "GOBP.DETECTION.OF.MOLECULE.OF.BACTERIAL.ORIGIN",
+    "GOBP.ANTIBACTERIAL.PEPTIDE.PRODUCTION",
+    "GOBP.ACTIVATION.OF.INNATE.IMMUNE.RESPONSE",
+    "GOBP.POSITIVE.REGULATION.OF.INNATE.IMMUNE.RESPONSE",
+    "GOBP.ANTIFUNGAL.INNATE.IMMUNE.RESPONSE",
+    "GOBP.ANTIBACTERIAL.HUMORAL.RESPONSE",
+    "Organ",
+    "Mouse",
+    "Cell_type",
+    "label"
+  ), drop = FALSE]
+)
+
+# Keep only immNEU and matNEU
+df <- df %>%
+  filter(Cell_type %in% c("immNEU", "matNEU"))
+
+pathway_columns <- c(
+  "NETosis",
+  "Neutrophil_activation",
+  "Chemotactic_receptors",
+  "Adhesion_molecules",
+  "ROS_production",
+  "GOBP.DEFENSE.RESPONSE.TO.BACTERIUM",
+  "GOBP.DETECTION.OF.MOLECULE.OF.BACTERIAL.ORIGIN",
+  "GOBP.POSITIVE.REGULATION.OF.INNATE.IMMUNE.RESPONSE",
+  "GOBP.ANTIFUNGAL.INNATE.IMMUNE.RESPONSE"
+)
+
+# Z-score per pathway (within all selected cells)
+z_scorified_df <- df %>%
+  mutate(across(
+    all_of(pathway_columns),
+    ~ as.numeric(scale(.)),   # center & scale
+    .names = "{.col}"         # keep same names
+  ))
+
+# List to store wilcox.test results
+results_list <- list()
+
+for (pathway in pathway_columns) {
+  bm_values <- z_scorified_df %>%
+    filter(Organ == "Bone Marrow") %>%
+    pull(!!sym(pathway))
+  
+  spleen_values <- z_scorified_df %>%
+    filter(Organ == "Spleen") %>%
+    pull(!!sym(pathway))
+  
+  # Wilcoxon rank-sum test (unpaired)
+  test_result <- wilcox.test(
+    bm_values,
+    spleen_values,
+    alternative = "two.sided",
+    exact       = FALSE,  # safer for larger n
+    na.action   = na.omit
+  )
+  
+  results_list[[pathway]] <- test_result
+}
+
+# Calculate the average for each mouse, organ and label
+averaged_data <- z_scorified_df %>%
+  group_by(Mouse, Organ, label, Cell_type) %>%
+  summarise(across(pathway_columns, mean, na.rm = TRUE), .groups = 'drop')
+```
+
+####Plot FIgure 4A
+```{r}
+library(dplyr)
+library(ggplot2)
+library(rlang)   # for .data and sym
+
+# Inspect columns
+message("Column names in averaged_data:")
+print(colnames(averaged_data))
+
+# Metrics actually present in averaged_data
+metric_columns <- c(
+  "NETosis",
+  "Neutrophil_activation",
+  "Chemotactic_receptors",
+  "Adhesion_molecules",
+  "ROS_production",
+  "GOBP.DEFENSE.RESPONSE.TO.BACTERIUM",
+  "GOBP.DETECTION.OF.MOLECULE.OF.BACTERIAL.ORIGIN",
+  "GOBP.POSITIVE.REGULATION.OF.INNATE.IMMUNE.RESPONSE",
+  "GOBP.ANTIFUNGAL.INNATE.IMMUNE.RESPONSE"
+)
+
+# Check they exist
+if (!all(metric_columns %in% colnames(averaged_data))) {
+  stop("One or more metric columns are not present in averaged_data.")
+}
+
+# Remove Blood samples
+no_blood_data <- averaged_data %>% 
+  filter(Organ != "Blood")
+
+# Split by organ
+spleen_data <- no_blood_data %>% filter(Organ == "Spleen")
+bone_marrow_data <- no_blood_data %>% filter(Organ == "Bone Marrow")
+
+message("Unique Mouse IDs in spleen_data:")
+print(unique(spleen_data$Mouse))
+message("Unique Mouse IDs in bone_marrow_data:")
+print(unique(bone_marrow_data$Mouse))
+
+# Join Spleen and BM by Mouse, Cell_type, label (paired design)
+joined_data <- spleen_data %>%
+  inner_join(
+    bone_marrow_data,
+    by    = c("Mouse", "Cell_type", "label"),
+    suffix = c("_spleen", "_bone_marrow")
+  )
+
+# For each metric, compute log2FC and paired Wilcoxon per cluster
+results <- lapply(metric_columns, function(metric) {
+  
+  metric_spleen_col      <- paste0(metric, "_spleen")
+  metric_bone_marrow_col <- paste0(metric, "_bone_marrow")
+  
+  joined_metric <- joined_data %>%
+    transmute(
+      Mouse,
+      Cell_type,
+      label,
+      Metric      = metric,
+      Spleen      = .data[[metric_spleen_col]],
+      Bone_Marrow = .data[[metric_bone_marrow_col]],
+      Log2_Fold_change = log2((Spleen + 1e-6) / (Bone_Marrow + 1e-6))  # small offset to avoid log2(0)
+    )
+  
+  # Paired Wilcoxon test per cluster (label)
+  p_values <- joined_metric %>%
+    group_by(label) %>%
+    summarise(
+      p_value    = wilcox.test(Spleen, Bone_Marrow,
+                               paired   = TRUE,
+                               exact    = FALSE,
+                               na.action = na.omit)$p.value,
+      Mean_Log2FC = mean(Log2_Fold_change, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(Metric = metric)
+  
+  p_values
+})
+
+# Combine results
+result_data <- bind_rows(results)
+
+# (Optional) BH correction across all tests
+result_data$FDR <- p.adjust(result_data$p_value, method = "BH")
+
+# Custom order of metrics (only include metrics you actually tested!)
+custom_metric_order <- rev(c(
+  "NETosis",
+  "Neutrophil_activation",
+  "ROS_production",
+  "GOBP.DEFENSE.RESPONSE.TO.BACTERIUM",
+  "GOBP.DETECTION.OF.MOLECULE.OF.BACTERIAL.ORIGIN",
+  "GOBP.ANTIFUNGAL.INNATE.IMMUNE.RESPONSE",
+  "GOBP.POSITIVE.REGULATION.OF.INNATE.IMMUNE.RESPONSE",
+  "Chemotactic_receptors",
+  "Adhesion_molecules"
+))
+
+result_data$Metric <- factor(result_data$Metric, levels = custom_metric_order)
+
+# Prepare for plotting
+plot_data <- result_data %>%
+  mutate(
+    Size  = -log10(p_value),
+    Color = ifelse(Mean_Log2FC > 0, "indianred3", "lightblue")
+  )
+
+# Bubble plot
+ggplot(plot_data, aes(x = label, y = Metric, size = Size, color = Color)) +
+  geom_point(alpha = 0.7) +
+  scale_size_continuous(range = c(2, 10)) +
+  scale_color_manual(values = c("indianred3", "lightblue")) +
+  theme_minimal() +
+  labs(
+    title = "Spleen vs Bone Marrow: log2FC by cluster and metric",
+    x     = "Cluster",
+    y     = "Metric",
+    size  = "-log10(p-value)",
+    color = "Log2 fold-change\n(Spleen vs BM)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+#HYPERCHOLESTEROLEMIA MODEL
+###Data Loading
+```{r}
+# Define the data directory (adjust your path accordingly)
+data_dir <- #Add specific location
+list.files(data_dir)
+
+# Read 10x data and create a SingleCellExperiment object
+scNeutro <- read10xCounts(data_dir, col.names = TRUE)
+
+# Ensure unique feature names using the provided symbols and IDs
+rownames(scNeutro) <- uniquifyFeatureNames(rowData(scNeutro)$ID, rowData(scNeutro)$Symbol)
+```
+
+###Creating Alternative Experiment Objects (HTO and ADT)
+```{r}
+# Check row names to locate HTOs and ADTs (assumed to be at the end)
+print(rownames(scNeutro))
+
+# Extract subsets for HTO and ADT (update indices as needed)
+HTO <- scNeutro[c(32298:32307), ]
+ADT <- scNeutro[c(32286:32297), ]
+
+# Add alternative experiments to the main object
+altExp(scNeutro, "HTO") <- HTO
+altExp(scNeutro, "ADT") <- ADT
+
+scNeutro  # Examine the object
+```
+
+###Lane Assignment and Splitting
+```{r}
+# Define the lane breakpoints based on cell indices
+# Adjust these breakpoints to your data dimensions if necessary
+lane_breaks <- list(
+  Lane_X2 = 1:1871,
+  Lane_X3 = 1872:6425,
+  Lane_X5 = 6426:8644,
+  Lane_X6 = 8645:ncol(scNeutro)
+)
+
+# Create a vector for lane assignment using cell barcodes from the colData
+Lane <- rep(NA, ncol(scNeutro))
+names(Lane) <- scNeutro$Barcode
+
+for (lane in names(lane_breaks)) {
+  Lane[lane_breaks[[lane]]] <- lane
+}
+scNeutro$Lane <- Lane  # Add lane info to colData
+
+# Create separate SCE objects per lane for parallel processing
+sce <- scNeutro
+lanes <- split(seq_len(ncol(sce)), sce$Lane)
+
+# Create a list of SCE objects, one for each lane
+lane_list <- lapply(names(lanes), function(lane_name) {
+  sce[, lanes[[lane_name]]]
+})
+names(lane_list) <- names(lanes)
+```
+
+###HTO Analysis and Doublet Detection 
+```{r}
+# Function to process HTO for a given lane
+process_lane <- function(sce_lane, lane_name, tsne_title = NULL) {
+  message("Processing ", lane_name)
+  
+  # Normalize alternative experiment expression for HTO
+  sce_lane <- normaliseExprs(sce = sce_lane, altExp_name = "HTO", transform = "log")
+  
+  # Run t-SNE on the HTO expression data (using PCA if needed)
+  sce_lane <- runTSNE(sce_lane, altexp = "HTO", name = "TSNE_HTO", pca = TRUE)
+  
+  # Plot t-SNE
+  p <- visualiseDim(sce_lane, dimNames = "TSNE_HTO") +
+    labs(title = ifelse(is.null(tsne_title), paste("tSNE (HTO) -", lane_name), tsne_title))
+  print(p)
+  
+  # Identify cross-sample doublets and display table & plot them
+  sce_lane <- crossSampleDoublets(sce_lane)
+  print(table(sce_lane$doubletClassify_between_label))
+  p2 <- visualiseDim(sce_lane, dimNames = "TSNE_HTO", colour_by = "doubletClassify_between_label")
+  print(p2)
+  
+  # Identify within-sample doublets (using minPts = 10) and display results
+  sce_lane <- withinSampleDoublets(sce_lane, minPts = 10)
+  print(table(sce_lane$doubletClassify_within_class))
+  p3 <- visualiseDim(sce_lane, dimNames = "TSNE_HTO", colour_by = "doubletClassify_within_label")
+  print(p3)
+  
+  return(sce_lane)
+}
+
+# Process each lane in the list
+lane_list <- lapply(names(lane_list), function(lane) {
+  process_lane(lane_list[[lane]], lane)
+})
+names(lane_list) <- names(lanes)
+```
+
+Aggregate HTO Analysis Across All Lanes
+```{r}
+# Process the full object (sce) using the same normalization and doublet detection steps
+sce <- normaliseExprs(sce = sce, altExp_name = "HTO", transform = "log")
+sce <- runTSNE(sce, altexp = "HTO", name = "TSNE_HTO", pca = TRUE)
+p_all <- visualiseDim(sce, dimNames = "TSNE_HTO") + labs(title = "tSNE (HTO) - All lanes")
+print(p_all)
+
+sce <- crossSampleDoublets(sce)
+print(table(sce$doubletClassify_between_label))
+p_all2 <- visualiseDim(sce, dimNames = "TSNE_HTO", colour_by = "doubletClassify_between_label")
+print(p_all2)
+
+sce <- withinSampleDoublets(sce, minPts = 10)
+print(table(sce$doubletClassify_within_class))
+p_all3 <- visualiseDim(sce, dimNames = "TSNE_HTO", colour_by = "doubletClassify_within_label")
+print(p_all3)
+
+```
+
+Merging Lane Results Back Into Main Object
+```{r}
+for (lane in names(lane_list)) {
+  idx <- which(sce$Lane == lane)
+  colData(sce)[idx, c("doubletClassify_between_label", "doubletClassify_between_class",
+                      "doubletClassify_within_label", "doubletClassify_within_class")] <- 
+    colData(lane_list[[lane]])[, c("doubletClassify_between_label", "doubletClassify_between_class",
+                                   "doubletClassify_within_label", "doubletClassify_within_class")]
+}
+```
+
+Annotation of Samples
+```{r}
+# Initialize annotation columns in sce colData
+n_cells <- ncol(sce)
+sce$Enriched <- rep(NA, n_cells)
+sce$Organ <- rep(NA, n_cells)
+sce$ZT <- rep(NA, n_cells)
+sce$Mouse <- rep(NA, n_cells)
+
+# Annotation for Enriched status:
+# Using vectorized assignment based on doublet labels and lane membership.
+enriched_idx <- which( (sce$Lane %in% c("Lane_X3", "Lane_X6") &
+                         sce$doubletClassify_between_label %in% as.character(1:5)) )
+sce$Enriched[enriched_idx] <- "Enriched"
+
+not_enriched_idx <- which( (sce$Lane %in% c("Lane_X3", "Lane_X6") &
+                             sce$doubletClassify_between_label %in% as.character(6:10)) |
+                           (sce$Lane %in% c("Lane_X2", "Lane_X5")) )
+sce$Enriched[not_enriched_idx] <- "Not_Enriched"
+
+# Annotation for Organ:
+# Define indices based on doublet labels and lane membership. Adjust as needed.
+sce$Organ[which( (sce$Lane %in% c("Lane_X3", "Lane_X6")) &
+                  sce$doubletClassify_between_label %in% c("1", "6") )] <- "Organ_04"
+
+sce$Organ[which( (sce$Lane %in% c("Lane_X3", "Lane_X6")) &
+                  sce$doubletClassify_between_label %in% c("2", "7") )] <- "Organ_05"
+
+sce$Organ[which( (sce$Lane %in% c("Lane_X3", "Lane_X6")) &
+                  sce$doubletClassify_between_label %in% c("3", "8") )] <- "Spleen"
+
+sce$Organ[which( (sce$Lane %in% c("Lane_X3", "Lane_X6")) &
+                  sce$doubletClassify_between_label %in% c("4", "9") )] <- "Bone_marrow"
+
+sce$Organ[which( (sce$Lane %in% c("Lane_X3", "Lane_X6")) &
+                  sce$doubletClassify_between_label %in% c("5", "10") )] <- "Blood"
+
+sce$Organ[which( (sce$Lane %in% c("Lane_X2", "Lane_X5")) &
+                  sce$doubletClassify_between_label %in% as.character(1:5) )] <- "Organ_06"
+
+sce$Organ[which( (sce$Lane %in% c("Lane_X2", "Lane_X5")) &
+                  sce$doubletClassify_between_label %in% as.character(6:10) )] <- "Blood"
+
+# Annotation for ZT based on lane membership
+sce$ZT[sce$Lane %in% c("Lane_X2", "Lane_X3")] <- "ZT1"
+sce$ZT[sce$Lane %in% c("Lane_X5", "Lane_X6")] <- "ZT13"
+
+# Annotation for Mouse:
+# For lanes X2 and X5, assign individual mice; for lanes X3 and X6, group as pool.
+sce$Mouse[which( (sce$Lane == "Lane_X2") & sce$doubletClassify_between_label %in% c("1", "6") )] <- "m1"
+sce$Mouse[which( (sce$Lane == "Lane_X2") & sce$doubletClassify_between_label %in% c("2", "7") )] <- "m2"
+sce$Mouse[which( (sce$Lane == "Lane_X2") & sce$doubletClassify_between_label %in% c("3", "8") )] <- "m3"
+sce$Mouse[which( (sce$Lane == "Lane_X2") & sce$doubletClassify_between_label %in% c("4", "9") )] <- "m4"
+sce$Mouse[which( (sce$Lane == "Lane_X2") & sce$doubletClassify_between_label %in% c("5", "10") )] <- "m5"
+sce$Mouse[which( (sce$Lane == "Lane_X5") & sce$doubletClassify_between_label %in% c("1", "6") )] <- "m6"
+sce$Mouse[which( (sce$Lane == "Lane_X5") & sce$doubletClassify_between_label %in% c("2", "7") )] <- "m7"
+sce$Mouse[which( (sce$Lane == "Lane_X5") & sce$doubletClassify_between_label %in% c("3", "8") )] <- "m8"
+sce$Mouse[which( (sce$Lane == "Lane_X5") & sce$doubletClassify_between_label %in% c("4", "9") )] <- "m9"
+sce$Mouse[which( (sce$Lane == "Lane_X5") & sce$doubletClassify_between_label %in% c("5", "10") )] <- "m10"
+sce$Mouse[sce$Lane %in% c("Lane_X3", "Lane_X6")] <- "m11_pool"
+
+```
+
+Filtering Out Doublet Cells
+```{r}
+# Keep only singlets for both within- and cross-sample doublet classifications
+sce <- sce[, sce$doubletClassify_within_class == "Singlet" & sce$doubletClassify_between_class == "Singlet"]
+sce  # Display the filtered object
+```
+
+###Quality control
+```{r}
+# Identify mitochondrial genes and spike-in transcripts
+is.mito <- grep("^mt-", rowData(sce)$Symbol)
+
+# Calculate per-cell QC metrics using scuttle and add them to colData
+df <- scuttle::perCellQCMetrics(sce, subsets = list(mito = is.mito))
+print(df)
+
+sce <- addPerCellQC(sce, subsets = list(mito = is.mito))
+print(colnames(colData(sce)))
+
+# Identify outliers based on library size, number of expressed genes, spike proportion, and mitochondrial percentage
+qc.lib2   <- isOutlier(sce$sum, log = TRUE, type = "lower")
+qc.nexprs2 <- isOutlier(sce$detected, log = TRUE, type = "lower")
+qc.mito2  <- isOutlier(sce$subsets_mito_percent, type = "higher")
+
+# Print thresholds (if needed)
+print(attr(qc.lib2, "thresholds"))
+print(attr(qc.nexprs2, "thresholds"))
+print(attr(qc.mito2, "thresholds"))
+
+# Define a composite filter based on the QC metrics
+discard2 <- qc.lib2 | qc.nexprs2 | qc.mito2
+
+# Display summary of cells to be discarded
+DataFrame(LibSize = sum(qc.lib2), NExprs = sum(qc.nexprs2),
+          MitoProp = sum(qc.mito2),Total = sum(discard2))
+
+# Create a filtered SCE object excluding poor-quality cells
+filtered <- sce[, !discard2]
+cat("Original dimensions:", dim(sce), "\nFiltered dimensions:", dim(filtered), "\n")
+```
+
+###Gene-Level Expression Filtering
+```{r}
+# Remove genes not expressed in any cell
+keep_feature <- nexprs(filtered, byrow = TRUE) > 0
+filtered <- filtered[keep_feature, ]
+cat("After non-expressed gene filtering:", dim(filtered), "\n")
+
+# Histogram of number of cells expressing each gene
+num.cells <- nexprs(filtered, byrow = TRUE)
+hist(log10(num.cells), breaks = 100, col = "grey80", 
+     xlab = expression(Log[10]~"number of cells"))
+
+# Further filtering: keep genes expressed in more than 5 cells
+to.keep <- num.cells > 5
+filtered <- filtered[to.keep, ]
+cat("After filtering genes expressed in > 5 cells:", dim(filtered), "\n")
+
+```
+
+Removing HTOs from the Main Experiment
+```{r}
+# Assuming HTO and ADT are at the end of the row indices
+sce_main <- filtered[1:16437, ]
+sce_main  # Final main object for downstream analysis
+```
+
+Reordering and Factoring colData
+```{r}
+# Reorder factors for downstream plotting
+sce_main$Enriched <- factor(sce_main$Enriched, levels = c("Not_Enriched", "Enriched"))
+sce_main$Organ    <- factor(sce_main$Organ, levels = c("Blood", "Bone_marrow", "Spleen", "Organ_04", "Organ_05", "Organ_06"))
+sce_main$ZT       <- factor(sce_main$ZT, levels = c("ZT1", "ZT13"))
+sce_main$Mouse    <- factor(sce_main$Mouse, levels = c("m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11_pool"))
+```
+
+Saving the Processed Object
+```{r}
+# Set your working directory and save the final object
+setwd("~/Dropbox/Backup_Work/Scripts/02_scRNA_16wks_HFD_apoE_BL_BM_LI_SP_LU/02_Objects")
+saveRDS(sce_main, file = "sce_new.rds.gz")
+```
+
+###Normalization, dimensionality reduction and clustering
+Please note that the number of clusters might vary if ran everything from scratch. Follow the next code for mantaining the clusters identified in the paper
+```{r}
+##############################################
+# NORMALIZATION & PREPROCESSING
+##############################################
+
+# Set seed to ensure reproducibility.
+set.seed(100)
+# Normalize library sizes by log-transforming counts.
+sce <- logNormCounts(sce)
+
+##############################################
+# IDENTIFY HIGHLY VARIABLE GENES (HVGs)
+##############################################
+
+# Model gene variability (e.g., from scran).
+dec.sce <- modelGeneVar(sce)
+# Select the top 20% of highly variable genes.
+chosen_hvgs <- getTopHVGs(dec.sce, prop = 0.2)
+# Check the selected gene names.
+str(chosen_hvgs)
+
+##############################################
+# DIMENSIONALITY REDUCTION: PCA
+##############################################
+
+# Run PCA using the HVGs only.
+# Use a distinct seed so results are reproducible.
+set.seed(1458847)
+sce <- runPCA(sce, subset_row = chosen_hvgs, name = "PCA_HVGs")
+print(reducedDimNames(sce))
+
+# Extract the percentage of variance explained by each principal component.
+percent_var <- attr(reducedDim(sce, "PCA_HVGs"), "percentVar")
+# Optionally, one can choose an elbow point using PCAtools:
+# chosen_elbow <- PCAtools::findElbowPoint(percent_var)
+# print(chosen_elbow)
+
+##############################################
+# DIMENSIONALITY REDUCTION: UMAP
+##############################################
+
+# Run UMAP on the top principal components.
+set.seed(20398)
+sce <- runUMAP(sce, n_dimred = 10, dimred = "PCA_HVGs", name = "UMAP_1")
+
+##############################################
+# GRAPH-BASED CLUSTERING & COMMUNITY DETECTION
+##############################################
+
+# Set seed prior to building graph for reproducible clustering.
+set.seed(20300)
+# Build a shared nearest-neighbor (SNN) graph.
+# 'k=15' specifies the number of neighbors and 'd=10' the number of dimensions (PCs) to use.
+sce_graph <- buildSNNGraph(sce, k = 15, d = 10, use.dimred = NULL)
+
+# Perform clustering using community detection methods.
+# Louvain clustering:
+louvain_clusters <- igraph::cluster_louvain(sce_graph)$membership
+
+# Assign the chosen cluster labels into the 'colLabels' metadata.
+# You can switch methods by changing which assignment is active.
+colLabels(sce) <- factor(louvain_clusters)
+```
+
+###Cell asingment
+```{r}
+# Choose a reference file and load it
+filename <- file.choose()    # Interactive file selection; adjust if desired
+ref <- readRDS(filename)
+
+# Optional: If you prefer to load a built-in reference, uncomment below:
+# library(celldex)
+# ref <- MouseRNAseqData()
+
+# Save the reference object into a known location
+setwd("~/Dropbox/Backup Work/Scripts/02_scRNA_16wks_HFD_apoE_BL_BM_LI_SP_LU/02_Objects")
+saveRDS(ref, file = "ref_mouse_cells.rds.gz")
+```
+
+```{r}
+# Run SingleR using the pre-loaded reference and your test SingleCellExperiment object (sce).
+# 'ref$label.main' provides the main cell type labels for each reference cell.
+pred <- SingleR(test = sce, ref = ref, labels = ref$label.main)
+
+# Visualize the prediction score heatmap.
+plotScoreHeatmap(pred)
+```
+
+```{r}
+# Create a table of assigned labels vs. our existing clusters and plot a heatmap.
+
+# Generate a contingency table comparing the SingleR pruned predictions to the cell clusters defined in sce.
+tab <- table(Assigned = pred$pruned.labels, Cluster = colLabels(sce))
+library(pheatmap)
+
+# Plot the (log-transformed) heatmap; adding a small offset (10) for log-transformation stability.
+pheatmap(log2(tab + 10), color = colorRampPalette(c("white", "blue"))(101))
+```
+
+```{r}
+# Initialize cell type annotation with a default label ("m")
+sce$Cell_type <- rep("m", ncol(sce))
+
+# Update cell type annotations using logical indexing on sce$label:
+sce$Cell_type[sce$label == "9"] <- "NK_cell"
+sce$Cell_type[sce$label %in% c("6", "14")] <- "Macrophage"
+sce$Cell_type[sce$label == "13"] <- "Endothelial_cell"
+sce$Cell_type[sce$label == "5"] <- "B_cell"
+sce$Cell_type[sce$label == "1"] <- "DC"
+sce$Cell_type[sce$label %in% c("1", "2", "4", "7")] <- "Monocyte"
+sce$Cell_type[sce$label %in% c("16", "17")] <- "immNEU"
+sce$Cell_type[sce$label %in% c("11", "10", "3", "8", "12", "15")] <- "matNEU"
+
+# Convert the Cell_type vector to a factor with an ordered level.
+sce$Cell_type <- factor(sce$Cell_type, 
+                        levels = c("B_cell", "Endothelial_cell", "NK_cell", "DC", 
+                                   "Monocyte", "Macrophage", "immNEU", "matNEU"))
+
+# Set seed for reproducibility and plot the UMAP visualization with cell type labels.
+set.seed(20300)
+plotReducedDim(sce, dimred = "UMAP_1", colour_by = "Cell_type", text_by = "Cell_type", 
+               point_size = 1)
+```
+
+```{r}
+setwd("~/Dropbox/Backup_Work/Scripts/02_scRNA_16wks_HFD_apoE_BL_BM_LI_SP_LU/02_Objects")
+saveRDS(sce, file = "sce_annotated_new.rds.gz")
+```
+
+###Subset to Neutrophils
+```{r}
+# Keep only immature (immNEU) and mature (matNEU) neutrophils across all conditions:
+sce_neutro <- sce[, sce$Cell_type %in% c("immNEU", "matNEU")]
+
+# Further subset to Blood, Bone_marrow, and Spleen:
+sce_neutro_BL_BM_SP <- sce_neutro[, sce_neutro$Organ %in% c("Blood", "Bone_marrow", "Spleen")]
+
+# Check dimensions:
+dim(sce_neutro)
+dim(sce_neutro_BL_BM_SP)
+```
+
+Cluster Neutrophil Subset
+```{r}
+set.seed(20300)
+# Build SNN graph on the 10 PCs used for UMAP
+g <- buildSNNGraph(sce_neutro_BL_BM_SP, k = 15, d = 10)
+
+# Louvain community detection
+clusters <- factor( igraph::cluster_louvain(g)$membership )
+colLabels(sce_neutro_BL_BM_SP) <- clusters
+
+# Visualize clusters on UMAP
+plotReducedDim(sce_neutro_BL_BM_SP, dimred = "UMAP_1",
+               colour_by = "label", text_by = "label",
+               point_size = 2) +
+  theme_minimal() +
+  ggtitle("Louvain Clusters on Neutrophils")
+```
+
+Annotate Neutrophil Subpopulations
+```{r}
+# Default label
+sce_neutro_BL_BM_SP$Neutrophil_subpop <- rep(NA, ncol(sce_neutro_BL_BM_SP))
+
+# Vectorized assignment by cluster label
+lab <- sce_neutro_BL_BM_SP$label
+sce_neutro_BL_BM_SP$Neutrophil_subpop[lab == 7]             <- "proNEU_preNEU"
+sce_neutro_BL_BM_SP$Neutrophil_subpop[lab %in% c(6, 8)]     <- "immNEU"
+sce_neutro_BL_BM_SP$Neutrophil_subpop[lab %in% 1:5]         <- "matNEU"
+
+# Factor with meaningful order
+sce_neutro_BL_BM_SP$Neutrophil_subpop <- factor(
+  sce_neutro_BL_BM_SP$Neutrophil_subpop,
+  levels = c("proNEU_preNEU", "immNEU", "matNEU")
+)
+
+# UMAP colored by subpopulation
+set.seed(20300)
+plotReducedDim(sce_neutro_BL_BM_SP, dimred = "UMAP_1",
+               colour_by = "Neutrophil_subpop", text_by = "Neutrophil_subpop",
+               point_size = 1) +
+  theme_light() +
+  ggtitle("Neutrophil Subpopulations")
+
+```
+
+####Extended Figure 2F:  Faceted ggplot Representation
+```{r}
+# Extract UMAP coordinates into a data.frame
+umap_df <- as.data.frame(reducedDim(sce_neutro_BL_BM_SP, "UMAP_1"))
+colnames(umap_df) <- c("UMAP_1", "UMAP_2")
+
+# Add metadata
+umap_df$Subpop <- sce_neutro_BL_BM_SP$Neutrophil_subpop
+umap_df$Organ  <- sce_neutro_BL_BM_SP$Organ
+
+# ggplot with custom colors and facets
+ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2, color = Subpop)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = c(
+    proNEU_preNEU = "lightgrey",
+    immNEU        = "cyan4",
+    matNEU        = "chocolate3"
+  )) +
+  facet_wrap(~ Organ) +
+  theme_classic() +
+  labs(title = "UMAP of Neutrophil Subpopulations by Organ")
+```
+
+6. Save Objects
+```{r}
+setwd("~/Dropbox/Backup_Work/Scripts/02_scRNA_16wks_HFD_apoE_BL_BM_LI_SP_LU/02_Objects")
+saveRDS(sce_neutro,            file = "sce_neutro.rds.gz")
+saveRDS(sce_neutro_BL_BM_SP,   file = "sce_neutro_BL_BM_SP.rds.gz")
+```
+
+###Analysis of interferon signaling
+```{r}
+#GS.Hallmark
+sce <- runEscape(sce, 
+                   gene.sets = GS.hallmark.sub, 
+                   method = "UCell",
+                   groups = 1000, cores = 2, maxRank = 3000, 
+                   min.size = NULL, new.assay.name = "GS.hallmark")
+
+#GS.C2
+sce <- runEscape(sce, 
+                   gene.sets = GS.C2.sub, 
+                   method = "UCell",
+                   groups = 1000, cores = 2, maxRank = 3000, 
+                   min.size = NULL, new.assay.name = "GS.C2")
+
+```
+
+```{r}
+add_scores_from_altexp <- function(sce, alt_name, assay_name = NULL, prefix = NULL) {
+  stopifnot(alt_name %in% altExpNames(sce))
+  ae <- altExp(sce, alt_name)
+
+  # pick assay: prefer "UCell" if available
+  if (is.null(assay_name)) {
+    assay_name <- if ("UCell" %in% assayNames(ae)) "UCell" else assayNames(ae)[1]
+  }
+  mat <- assay(ae, assay_name)  # rows = gene sets, cols = cells
+
+  # to colData: rows must be cells -> transpose
+  df <- as.data.frame(t(mat))
+  if (is.null(prefix)) prefix <- alt_name
+  colnames(df) <- paste0(prefix, ".", make.names(rownames(mat)))
+
+  # ensure same cell order as sce
+  df <- df[colnames(sce), , drop = FALSE]
+
+  colData(sce) <- cbind(colData(sce), S4Vectors::DataFrame(df))
+  sce
+}
+
+# Use it for your two altExps
+sce <- add_scores_from_altexp(sce, "GS.hallmark")  # uses assay "UCell" if present
+sce <- add_scores_from_altexp(sce, "GS.C2")
+
+```
+
+Extended Figure 14
+```{r}
+score_col <- "GS.hallmark.HALLMARK.INTERFERON.ALPHA.RESPONSE" #OR "REACTOME-INTERFERON-ALPHA-BETA-SIGNALING"
+
+df_plot <- as.data.frame(colData(sce)) %>%
+  filter(
+    #ZT == "ZT1",
+    Neutrophil_subpopulation == "proNEU_preNEU",
+    Organ %in% c("Bone_marrow", "Spleen")
+  )
+
+
+# 3. Plot IF wanted
+ggplot(df_plot, aes(x = Organ, y = .data[[score_col]], fill = Organ)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+  theme_classic(base_size = 12) +
+  labs(
+    x = "Organ",
+    y = "UCell score",
+    title = "GS.hallmark.HALLMARK.INTERFERON.ALPHA.RESPONSE"
+  ) +
+  scale_fill_manual(values = c("Bone_marrow" = "#1f77b4", "Spleen" = "maroon4")) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+
+# make a compact data.frame
+df_export <- as.data.frame(colData(sce)) %>%
+  filter(
+    ZT == "ZT1",
+    Neutrophil_subpopulation == "proNEU_preNEU",
+    Organ %in% c("Bone_marrow", "Spleen")
+  ) %>%
+  select(Mouse, Organ, Neutrophil_subpopulation, ZT, all_of(score_col))
+
+# save to CSV
+write.csv(df_export, file = "IFN_alpha_beta_scores_ZT1.csv", row.names = TRUE)
+```
+
+
+#MELANOMA MODEL
+###Data loading
+```{r}
+# Define the data directory (adjust your path accordingly)
+data_dir <- #Add specific location
+list.files(data_dir)
+
+# Read 10x data and create a SingleCellExperiment object
+sce <- read10xCounts(data_dir, col.names = TRUE)
+
+# Ensure unique feature names using the provided symbols and IDs
+rownames(sce) <- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+```
+
+###Quality control
+```{r}
+# Identify mitochondrial genes and spike-in transcripts
+is.mito <- grep("^mt-", rowData(sce)$Symbol)
+
+# Calculate per-cell QC metrics using scuttle and add them to colData
+df <- scuttle::perCellQCMetrics(sce, subsets = list(mito = is.mito))
+print(df)
+
+sce <- addPerCellQC(sce, subsets = list(mito = is.mito))
+print(colnames(colData(sce)))
+
+# Identify outliers based on library size, number of expressed genes, spike proportion, and mitochondrial percentage
+qc.lib2   <- isOutlier(sce$sum, log = TRUE, type = "lower")
+qc.nexprs2 <- isOutlier(sce$detected, log = TRUE, type = "lower")
+qc.mito2  <- isOutlier(sce$subsets_mito_percent, type = "higher")
+
+# Print thresholds (if needed)
+print(attr(qc.lib2, "thresholds"))
+print(attr(qc.nexprs2, "thresholds"))
+print(attr(qc.mito2, "thresholds"))
+
+# Define a composite filter based on the QC metrics
+discard2 <- qc.lib2 | qc.nexprs2 | qc.mito2
+
+# Display summary of cells to be discarded
+DataFrame(LibSize = sum(qc.lib2), NExprs = sum(qc.nexprs2),
+          MitoProp = sum(qc.mito2),Total = sum(discard2))
+
+# Create a filtered SCE object excluding poor-quality cells
+filtered <- sce[, !discard2]
+cat("Original dimensions:", dim(sce), "\nFiltered dimensions:", dim(filtered), "\n")
+```
+
+###Gene-Level Expression Filtering
+```{r}
+# Remove genes not expressed in any cell
+keep_feature <- nexprs(filtered, byrow = TRUE) > 0
+filtered <- filtered[keep_feature, ]
+cat("After non-expressed gene filtering:", dim(filtered), "\n")
+
+# Histogram of number of cells expressing each gene
+num.cells <- nexprs(filtered, byrow = TRUE)
+hist(log10(num.cells), breaks = 100, col = "grey80", 
+     xlab = expression(Log[10]~"number of cells"))
+
+# Further filtering: keep genes expressed in more than 5 cells
+to.keep <- num.cells > 5
+filtered <- filtered[to.keep, ]
+cat("After filtering genes expressed in > 5 cells:", dim(filtered), "\n")
+```
+
+###HTO analysis
+```{r}
+##############################################
+## HTO ANALYSIS
+##############################################
+
+## 1. Identify HTOs and ADTs -----------------------------------------------
+## Here I keep your index ranges, but wrap them in variables.
+## If possible, replace these with pattern-based selection on rowData$Symbol.
+
+genes <- rownames(filtered)
+
+# HTOs / ADTs by row index (update if your feature ordering changes)
+hto_rows <- 18838:18847
+adt_rows <- 18848:18865
+
+HTOs <- genes[hto_rows]
+ADTs <- genes[adt_rows]
+
+# Use only HTO1–8 (exclude 9–10 from parabiont)
+hto_rows_use <- 18838:18845
+
+hto_sce <- filtered[hto_rows_use, ]
+adt_sce <- filtered[adt_rows, ]
+
+## 2. Store HTO and ADT as alternative experiments -------------------------
+
+altExp(filtered, "HTO") <- hto_sce
+altExp(filtered, "ADT") <- adt_sce
+
+# Work on a copy
+sce_citeseq <- filtered
+
+## 3. Normalise HTO counts and run t-SNE -----------------------------------
+
+set.seed(123)
+sce_citeseq <- normaliseExprs(
+  sce          = sce_citeseq,
+  altExp_name  = "HTO",
+  transform    = "log"
+)
+
+sce_citeseq <- runTSNE(
+  sce_citeseq,
+  altexp = "HTO",
+  name   = "TSNE_HTO",
+  pca    = TRUE
+)
+
+visualiseDim(
+  sce_citeseq,
+  dimNames = "TSNE_HTO"
+) + labs(title = "tSNE (HTO)")
+
+## 4. Cross-sample doublet detection ---------------------------------------
+
+sce_citeseq <- crossSampleDoublets(sce_citeseq)
+
+# Results stored in colData:
+#   doubletClassify_between_label
+#   doubletClassify_between_class
+table(sce_citeseq$doubletClassify_between_label)
+
+visualiseDim(
+  sce_citeseq,
+  dimNames  = "TSNE_HTO",
+  colour_by = "doubletClassify_between_label"
+)
+
+## 5. Inspect HTO count scatter (CiteFuse::plotHTO) ------------------------
+
+plotHTO(sce_citeseq, 1:4)  # adjust indices as needed for your HTOs
+
+## 6. Demultiplexing with hashedDrops --------------------------------------
+
+# Use the raw HTO counts matrix (tags × cells)
+hto_counts <- assay(altExp(sce_citeseq, "HTO"), "counts")
+
+demux <- hashedDrops(hto_counts)
+demux
+
+table(demux$Confident)
+
+# Attach demux results to colData (rownames must match cell barcodes)
+stopifnot(identical(rownames(demux), colnames(sce_citeseq)))
+colData(sce_citeseq) <- cbind(colData(sce_citeseq), demux)
+
+## 7. Within-sample doublet detection --------------------------------------
+
+sce_citeseq <- withinSampleDoublets(
+  sce_citeseq,
+  minPts = 10
+)
+
+# Results stored in:
+#   doubletClassify_within_label
+#   doubletClassify_within_class
+table(sce_citeseq$doubletClassify_within_label)
+
+visualiseDim(
+  sce_citeseq,
+  dimNames  = "TSNE_HTO",
+  colour_by = "doubletClassify_within_label"
+)
+
+## 8. Final singlet filtering -----------------------------------------------
+## Remove both within-sample doublets and non-confident barcodes.
+## If you also want to enforce cross-sample singlets, include between_class.
+
+sce <- sce_citeseq[
+  ,
+  sce_citeseq$doubletClassify_within_class  == "Singlet" &
+  sce_citeseq$doubletClassify_between_class == "Singlet" &
+  sce_citeseq$Confident
+]
+
+sce
+```
+
+###Sample annotation
+```{r}
+###############################################
+## DEFINING SAMPLES: LANE, MOUSE, ORGAN, GENOTYPE
+###############################################
+
+# Number of cells
+n_cells <- ncol(sce)
+
+## 1. LANE ---------------------------------------------------------------
+
+# If lane structure is purely by column index (as in your original code):
+lane_vec <- rep(NA_character_, n_cells)
+
+lane_vec[1:6675]        <- "Lane_1"
+lane_vec[6676:11349]    <- "Lane_2"
+lane_vec[11350:16174]   <- "Lane_3"
+lane_vec[16175:n_cells] <- "Lane_4"
+
+sce$Lane <- factor(lane_vec, levels = c("Lane_1", "Lane_2", "Lane_3", "Lane_4"))
+
+## (Alternative, if barcodes encode lane by suffix -1/-4:)
+# sce$Lane <- NA_character_
+# sce$Lane[endsWith(sce$Barcode, "-1")] <- "Lane_1"
+# sce$Lane[endsWith(sce$Barcode, "-2")] <- "Lane_2"
+# sce$Lane[endsWith(sce$Barcode, "-3")] <- "Lane_3"
+# sce$Lane[endsWith(sce$Barcode, "-4")] <- "Lane_4"
+# sce$Lane <- factor(sce$Lane)
+
+
+## 2. MOUSE --------------------------------------------------------------
+
+# 'Best' is the HTO assignment 1–8; map directly to m1–m8
+sce$Mouse <- NA_character_
+valid_best <- sce$Best %in% as.character(1:8)
+sce$Mouse[valid_best] <- paste0("m", sce$Best[valid_best])
+
+sce$Mouse <- factor(sce$Mouse, levels = paste0("m", 1:8))
+
+
+## 3. ORGAN --------------------------------------------------------------
+
+sce$Organ <- NA_character_
+
+sce$Organ[sce$Lane == "Lane_1"] <- "Blood"
+sce$Organ[sce$Lane == "Lane_2"] <- "Bone_Marrow"
+sce$Organ[sce$Lane == "Lane_3"] <- "Spleen"
+sce$Organ[sce$Lane == "Lane_4"] <- "Organ_04"
+
+sce$Organ <- factor(
+  sce$Organ,
+  levels = c("Blood", "Bone_Marrow", "Spleen", "Organ_04")
+)
+
+
+## 4. GENOTYPE -----------------------------------------------------------
+
+sce$Genotype <- NA_character_
+
+sce$Genotype[sce$Mouse %in% c("m1", "m2", "m3", "m4")] <- "WT"
+sce$Genotype[sce$Mouse %in% c("m5", "m6", "m7", "m8")] <- "KO"
+
+sce$Genotype <- factor(sce$Genotype, levels = c("WT", "KO"))
+
+```
+
+```{r}
+###############################################
+## REMOVING HTOs / ADTs FROM MAIN EXPERIMENT
+###############################################
+
+# If you have altExps already defined:
+hto_features <- if ("HTO" %in% altExpNames(sce)) rownames(altExp(sce, "HTO")) else character(0)
+adt_features <- if ("ADT" %in% altExpNames(sce)) rownames(altExp(sce, "ADT")) else character(0)
+
+keep_main <- !(rownames(sce) %in% c(hto_features, adt_features))
+sce <- sce[keep_main, ]
+
+```
+
+```{r}
+saveRDS(sce, file = "~/Dropbox/Backup Work/Scripts/08_scRNA_Jaga_Tumor/02_Objects/sce.rds.gz")
+```
+
+###Normalization, dimensionality reduction and clustering
+Please note that the number of clusters might vary if ran everything from scratch. Follow the next code for mantaining the clusters identified in the paper
+```{r}
+##############################################
+## NORMALISATION, HVGs, PCA, UMAP, CLUSTERING
+##############################################
+
+## 1. Library-size normalisation ---------------------------------------------
+
+set.seed(100)
+sce_filtered <- logNormCounts(sce_filtered)
+# log-normalised values stored in assay(sce_filtered, "logcounts")
+
+## 2. Per-gene variance and HVGs ---------------------------------------------
+
+dec.sce <- modelGeneVar(sce_filtered)
+hvgs    <- getTopHVGs(dec.sce, prop = 0.2)
+str(hvgs)
+
+## 3. PCA on log-normalised expression (HVGs) --------------------------------
+
+set.seed(1458847)
+sce_filtered <- runPCA(
+  sce_filtered,
+  exprs_values = "logcounts",
+  subset_row   = hvgs,
+  ncomponents  = 20,
+  name         = "PCA_HVGs"
+)
+
+reducedDimNames(sce_filtered)
+
+# Percentage of variance explained for each PC
+percent.var <- attr(reducedDim(sce_filtered, "PCA_HVGs"), "percentVar")
+# Optionally: chosen.elbow <- PCAtools::findElbowPoint(percent.var)
+
+## 4. UMAP on PCA space ------------------------------------------------------
+
+set.seed(20398)
+sce_filtered <- runUMAP(
+  sce_filtered,
+  dimred    = "PCA_HVGs",
+  n_dimred  = 10,
+  name      = "UMAP_1"
+)
+
+## 5. Graph-based clustering on PCA ------------------------------------------
+
+set.seed(20300)
+g <- buildSNNGraph(
+  sce_filtered,
+  use.dimred = "PCA_HVGs",
+  k          = 15
+)
+
+cl <- igraph::cluster_louvain(g)$membership
+colLabels(sce_filtered) <- factor(cl)
+
+```
+
+###Cell annotation
+```{r}
+# Choose a reference file and load it
+filename <- file.choose()    # Interactive file selection; adjust if desired
+ref <- readRDS(filename)
+
+# Optional: If you prefer to load a built-in reference, uncomment below:
+# library(celldex)
+# ref <- MouseRNAseqData()
+```
+
+```{r}
+# Run SingleR using the pre-loaded reference and your test SingleCellExperiment object (sce).
+# 'ref$label.main' provides the main cell type labels for each reference cell.
+pred <- SingleR(test = sce, ref = ref, labels = ref$label.main)
+
+# Visualize the prediction score heatmap.
+plotScoreHeatmap(pred)
+```
+
+```{r}
+# Create a table of assigned labels vs. our existing clusters and plot a heatmap.
+
+# Generate a contingency table comparing the SingleR pruned predictions to the cell clusters defined in sce.
+tab <- table(Assigned = pred$pruned.labels, Cluster = colLabels(sce))
+library(pheatmap)
+
+# Plot the (log-transformed) heatmap; adding a small offset (10) for log-transformation stability.
+pheatmap(log2(tab + 10), color = colorRampPalette(c("white", "blue"))(101))
+```
+```{r}
+############################################################
+## CELL TYPE ANNOTATION (CLEAN & SAFE VERSION)
+############################################################
+
+# 1) Create empty annotation vector
+sce_filtered$Cell_type <- NA_character_
+
+# 2) Mapping of cluster labels → cell types
+label_to_type <- list(
+  NK_cell   = c("47"),
+  DC        = c("46", "19", "33", "45"),
+  GMP       = c("43"),
+  Stem_Cell = c("17", "30", "15", "37"),
+  Monocyte  = c("4", "11", "27", "18", "6", "35", "36", "44", "8", "7"),
+  cMoP      = c("42"),
+  B_cell    = c("31", "22"),
+  Unknown   = c("28"),
+  
+  proNEU    = c("12"),
+  preNEU    = c("1", "21"),
+  
+  immNEU    = c("23", "32", "29", "39", "20", "14", "9"),
+  matNEU    = c("34", "40", "26", "41", "16", "38", "13", "10", "5", "2", "25", "3", "24")
+)
+
+# 3) Apply mapping
+for (celltype in names(label_to_type)) {
+  sce_filtered$Cell_type[sce_filtered$label %in% label_to_type[[celltype]]] <- celltype
+}
+
+# 4) Convert to ordered factor
+sce_filtered$Cell_type <- factor(
+  sce_filtered$Cell_type,
+  levels = c(
+    "Unknown", "B_cell", "NK_cell", "DC", "Monocyte", "Stem_Cell",
+    "GMP", "cMoP", "proNEU", "preNEU", "immNEU", "matNEU"
+  )
+)
+
+```
+
+```{r}
+setwd("~/Dropbox/Backup Work/Scripts/08_scRNA_Jaga_Tumor/02_Objects")
+saveRDS(sce_annotated, file = "sce_annotated.rds.gz")
+```
+
+###Subset to Neutrophils
+```{r}
+# Keep only immature (immNEU) and mature (matNEU) neutrophils across all conditions:
+sce_neutro <- sce[, sce$Cell_type == "Neutrophils"]
+
+# Further subset to Blood, Bone_marrow, and Spleen:
+sce_neutro <- sce_neutro[, sce_neutro$Organ %in% c("Blood", "Bone_Marrow", "Spleen")]
+sce_neutro <- sce_neutro[, sce_neutro$Genotype == "WT"]
+
+# Check dimensions:
+dim(sce_neutro)
+```
+
+3. Cluster Neutrophil Subset
+```{r}
+##############################################
+# IDENTIFY HIGHLY VARIABLE GENES (HVGs)
+##############################################
+
+# Model gene variability (e.g., from scran).
+dec.sce <- modelGeneVar(sce_neutro)
+# Select the top 20% of highly variable genes.
+chosen_hvgs <- getTopHVGs(dec.sce, prop = 1)
+# Check the selected gene names.
+str(chosen_hvgs)
+
+##############################################
+# DIMENSIONALITY REDUCTION: PCA
+##############################################
+
+# Run PCA using the HVGs only.
+# Use a distinct seed so results are reproducible.
+set.seed(1458847)
+sce_neutro <- runPCA(sce_neutro, subset_row = chosen_hvgs, name = "PCA_HVGs")
+print(reducedDimNames(sce_neutro))
+
+# Extract the percentage of variance explained by each principal component.
+percent_var <- attr(reducedDim(sce_neutro, "PCA_HVGs"), "percentVar")
+# Optionally, one can choose an elbow point using PCAtools:
+# chosen_elbow <- PCAtools::findElbowPoint(percent_var)
+# print(chosen_elbow)
+
+##############################################
+# DIMENSIONALITY REDUCTION: UMAP
+##############################################
+
+# Run UMAP on the top principal components.
+set.seed(20398)
+sce_neutro <- runUMAP(sce_neutro, n_dimred = 10, dimred = "PCA_HVGs", name = "UMAP_1")
+
+##############################################
+# GRAPH-BASED CLUSTERING & COMMUNITY DETECTION
+##############################################
+
+# Set seed prior to building graph for reproducible clustering.
+set.seed(20300)
+# Build a shared nearest-neighbor (SNN) graph.
+# 'k=15' specifies the number of neighbors and 'd=10' the number of dimensions (PCs) to use.
+sce_graph <- buildSNNGraph(sce_neutro, k = 15, d = 10, use.dimred = NULL)
+
+# Perform clustering using community detection methods.
+# Louvain clustering:
+louvain_clusters <- igraph::cluster_louvain(sce_graph)$membership
+
+# Assign the chosen cluster labels into the 'colLabels' metadata.
+# You can switch methods by changing which assignment is active.
+colLabels(sce_neutro) <- factor(louvain_clusters)
+```
+
+
+Annotate Neutrophil Subpopulations
+```{r}
+# Default label
+sce_neutro$Neutrophil_subpop <- rep(NA, ncol(sce_neutro))
+
+# Vectorized assignment by cluster label
+lab <- sce_neutro$label
+sce_neutro$Neutrophil_subpop[lab == 11]             <- "preNEU"
+sce_neutro$Neutrophil_subpop[lab %in% c(8, 10)]     <- "immNEU"
+sce_neutro$Neutrophil_subpop[lab %in% c(1, 2, 3, 4, 5, 6, 7, 9)]         <- "matNEU"
+
+# Factor with meaningful order
+sce_neutro$Neutrophil_subpop <- factor(
+  sce_neutro$Neutrophil_subpop,
+  levels = c("preNEU", "immNEU", "matNEU")
+)
+```
+
+
+####Extended Figure 2G
+```{r}
+# Extract UMAP coordinates into a data.frame
+umap_df <- as.data.frame(reducedDim(sce_neutro, "UMAP_1"))
+colnames(umap_df) <- c("UMAP_1", "UMAP_2")
+
+# Add metadata
+umap_df$Subpop <- sce_neutro$Neutrophil_subpop
+umap_df$Organ  <- sce_neutro$Organ
+
+# ggplot with custom colors and facets
+ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2, color = Subpop)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = c(
+    preNEU = "lightgrey",
+    immNEU        = "cyan4",
+    matNEU        = "chocolate3"
+  )) +
+  facet_wrap(~ Organ) +
+  theme_classic() +
+  labs(title = "UMAP of Neutrophil Subpopulations by Organ")
+```
+
+```{r}
+setwd("~/Dropbox/Backup_Work/Scripts/01_scRNA_BL_BM_SP_LI_PBS_AMD_ABX/019_Tumor_model_analysis/Objects")
+saveRDS(sce_neutro,            file = "sce_neutro.rds.gz")
+```
+
+###Signature analysis
+```{r}
+#GS.Hallmark
+sce_neutro <- runEscape(sce_neutro, 
+                   gene.sets = GS.hallmark.sub, 
+                   method = "UCell",
+                   groups = 1000, cores = 2, maxRank = 3000, 
+                   min.size = NULL, new.assay.name = "GS.hallmark")
+
+#GS.C2
+sce_neutro <- runEscape(sce_neutro, 
+                   gene.sets = GS.C2.sub, 
+                   method = "UCell",
+                   groups = 1000, cores = 2, maxRank = 3000, 
+                   min.size = NULL, new.assay.name = "GS.C2")
+
+```
+
+
+```{r}
+add_scores_from_altexp <- function(sce_neutro, alt_name, assay_name = NULL, prefix = NULL) {
+  stopifnot(alt_name %in% altExpNames(sce_neutro))
+  ae <- altExp(sce_neutro, alt_name)
+
+  # pick assay: prefer "UCell" if available
+  if (is.null(assay_name)) {
+    assay_name <- if ("UCell" %in% assayNames(ae)) "UCell" else assayNames(ae)[1]
+  }
+  mat <- assay(ae, assay_name)  # rows = gene sets, cols = cells
+
+  # to colData: rows must be cells -> transpose
+  df <- as.data.frame(t(mat))
+  if (is.null(prefix)) prefix <- alt_name
+  colnames(df) <- paste0(prefix, ".", make.names(rownames(mat)))
+
+  # ensure same cell order as sce
+  df <- df[colnames(sce_neutro), , drop = FALSE]
+
+  colData(sce_neutro) <- cbind(colData(sce_neutro), S4Vectors::DataFrame(df))
+  sce_neutro
+}
+
+# Use it for your two altExps
+sce_neutro <- add_scores_from_altexp(sce_neutro, "GS.hallmark")  # uses assay "UCell" if present
+sce_neutro <- add_scores_from_altexp(sce_neutro, "GS.C2")
+```
+
+####Extended Figure 14B
+```{r}
+score_col <- "GS.hallmark.HALLMARK.INTERFERON.ALPHA.RESPONSE"
+
+df_plot <- as.data.frame(colData(sce_neutro)) %>%
+  filter(
+    #ZT == "ZT1",
+    Neutrophil_subpop == "preNEU",
+    Organ %in% c("Bone_Marrow", "Spleen")
+  )
+
+
+# 3. Plot
+ggplot(df_plot, aes(x = Organ, y = .data[[score_col]], fill = Organ)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+  theme_classic(base_size = 12) +
+  labs(
+    x = "Organ",
+    y = "UCell score",
+    title = "REACTOME-INTERFERON-ALPHA-BETA-SIGNALING"
+  ) +
+  scale_fill_manual(values = c("Bone_Marrow" = "#1f77b4", "Spleen" = "maroon4")) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+
+# make a compact data.frame
+df_export <- as.data.frame(colData(sce_neutro)) %>%
+  filter(
+    #ZT == "ZT1",
+    Neutrophil_subpop == "preNEU",
+    Organ %in% c("Bone_Marrow", "Spleen")
+  ) %>%
+  select(Mouse, Organ, Neutrophil_subpop, all_of(score_col))
+
+# save to CSV
+write.csv(df_export, file = "IFN_alpha_scores.csv", row.names = TRUE)
+```
+
+```{r}
+score_col <- "GS.C2.REACTOME.INTERFERON.ALPHA.BETA.SIGNALING"
+
+df_plot <- as.data.frame(colData(sce_neutro)) %>%
+  filter(
+    #ZT == "ZT1",
+    Neutrophil_subpop == "preNEU",
+    Organ %in% c("Bone_Marrow", "Spleen")
+  )
+
+
+# 3. Plot
+ggplot(df_plot, aes(x = Organ, y = .data[[score_col]], fill = Organ)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+  theme_classic(base_size = 12) +
+  labs(
+    x = "Organ",
+    y = "UCell score",
+    title = "REACTOME.INTERFERON.ALPHA.BETA.SIGNALING"
+  ) +
+  scale_fill_manual(values = c("Bone_Marrow" = "#1f77b4", "Spleen" = "maroon4")) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+
+# make a compact data.frame
+df_export <- as.data.frame(colData(sce_neutro)) %>%
+  filter(
+    #ZT == "ZT1",
+    Neutrophil_subpop == "preNEU",
+    Organ %in% c("Bone_Marrow", "Spleen")
+  ) %>%
+  select(Mouse, Organ, Neutrophil_subpop, all_of(score_col))
+
+# save to CSV
+write.csv(df_export, file = "IFN_alpha_beta_scores.csv", row.names = TRUE)
+```
+
+#IMPACT OF SPLENECTOMY AND PARTIAL IRRADIATION ON CIRCULATING NEUTROPHILS
+###Data Loading
+```{r}
+
+## Path to 10X data
+data_dir <- #Add specific location
+
+## Read 10X and build SCE
+scNeutro <- read10xCounts(data_dir, col.names = TRUE)
+
+## Ensure unique gene names using ID + Symbol
+rownames(scNeutro) <- uniquifyFeatureNames(
+  rowData(scNeutro)$ID,
+  rowData(scNeutro)$Symbol
+)
+
+```
+
+###Quality control
+```{r}
+## -------------------------------
+## QUALITY CONTROL – CELLS
+## -------------------------------
+
+# Mitochondrial genes (assuming "mt-" prefix in Symbol)
+is.mito  <- grep("^mt-", rowData(scNeutro)$Symbol)
+summary(is.mito)
+
+# ERCC spike-ins (assuming rownames start with "ERCC")
+is.spike <- grepl("^ERCC", rownames(scNeutro))
+summary(is.spike)
+
+# Per-cell QC metrics
+qc <- perCellQCMetrics(
+  scNeutro,
+  subsets = list(mito = is.mito, ERCC = is.spike)
+)
+
+# Alternatively store directly in colData
+scNeutro <- addPerCellQC(
+  scNeutro,
+  subsets = list(mito = is.mito, ERCC = is.spike)
+)
+
+colnames(colData(scNeutro))
+
+# Identify outliers:
+# - low library size
+qc.lib <- isOutlier(qc$sum, log = TRUE, type = "lower")
+attr(qc.lib, "thresholds")
+
+# - low number of detected genes
+qc.nexprs <- isOutlier(qc$detected, log = TRUE, type = "lower")
+attr(qc.nexprs, "thresholds")
+
+# - high ERCC (spike-in) proportion
+qc.spike <- isOutlier(qc$subsets_ERCC_percent, type = "higher")
+attr(qc.spike, "thresholds")
+
+# - high mitochondrial percentage
+qc.mito  <- isOutlier(qc$subsets_mito_percent, type = "higher")
+attr(qc.mito, "thresholds")
+
+# Combine all filters
+discard <- qc.lib | qc.nexprs | qc.spike | qc.mito
+table(discard)
+
+# Filter low-quality cells
+filtered <- scNeutro[, !discard]
+dim(scNeutro); dim(filtered)
+
+```
+
+###Gene-Level Expression Filtering
+```{r}
+## -------------------------------
+## QUALITY CONTROL – GENES
+## -------------------------------
+
+# Remove genes not expressed in any cell
+keep_feature <- nexprs(filtered, byrow = TRUE) > 0
+filtered <- filtered[keep_feature, ]
+dim(filtered)
+
+# Average expression and filtering very low abundance genes
+ave.counts <- calculateAverage(filtered)
+hist(
+  log10(ave.counts), breaks = 100, main = "",
+  col = "grey80",
+  xlab = expression(Log[10] ~ "average count")
+)
+
+# Example threshold (keep genes with minimal average expression)
+keep_ave <- ave.counts >= 1e-5
+filtered <- filtered[keep_ave, ]
+dim(filtered)
+
+# Number of cells expressing each gene
+num.cells <- nexprs(filtered, byrow = TRUE)
+hist(
+  log10(num.cells), breaks = 100, main = "",
+  col = "grey80",
+  xlab = expression(Log[10] ~ "number of cells")
+)
+
+# Keep genes expressed in > 5 cells
+keep_cells <- num.cells > 5
+filtered   <- filtered[keep_cells, ]
+dim(filtered)
+```
+
+###HTO analysis
+```{r}
+## -------------------------------
+## DEFINING SAMPLES:
+## LANE, TREATMENT, ORGAN, ENRICHMENT, CELL_TYPE
+## -------------------------------
+
+ncells <- ncol(sce)
+
+## ----- LANE -----
+Lane <- character(ncells)
+names(Lane) <- colnames(sce)
+
+Lane[1:469]        <- "Lane_1"
+Lane[470:ncells]   <- "Lane_2"
+
+sce$Lane <- Lane
+
+## ----- TREATMENT -----
+Treatment <- rep(NA_character_, ncells)
+names(Treatment) <- colnames(sce)
+
+# Sham
+idx <- (
+  (sce$doubletClassify_between_label == "1" & sce$Lane == "Lane_1") |
+  (sce$doubletClassify_between_label == "7" & sce$Lane == "Lane_2") |
+  (sce$doubletClassify_between_label == "1" & sce$Lane == "Lane_2")
+)
+Treatment[idx] <- "Sham"
+
+# Splenectomy
+idx <- (
+  sce$doubletClassify_between_label == "2" &
+  sce$Lane %in% c("Lane_1", "Lane_2")
+)
+Treatment[idx] <- "Splenectomy"
+
+# IgG
+idx <- (
+  (sce$doubletClassify_between_label == "3" & sce$Lane == "Lane_1") |
+  (sce$doubletClassify_between_label == "8" & sce$Lane == "Lane_2") |
+  (sce$doubletClassify_between_label == "3" & sce$Lane == "Lane_2")
+)
+Treatment[idx] <- "IgG"
+
+# CXCR2
+idx <- (
+  sce$doubletClassify_between_label == "4" &
+  sce$Lane %in% c("Lane_1", "Lane_2")
+)
+Treatment[idx] <- "CXCR2"
+
+# Partial irradiation
+idx <- (
+  sce$doubletClassify_between_label == "5" &
+  sce$Lane %in% c("Lane_1", "Lane_2")
+)
+Treatment[idx] <- "Partial_Irradiation"
+
+# IgG control
+idx <- (
+  sce$doubletClassify_between_label == "6" &
+  sce$Lane %in% c("Lane_1", "Lane_2")
+)
+Treatment[idx] <- "IgG_Control"
+
+sce$Treatment <- Treatment
+
+## ----- ORGAN -----
+Organ <- rep("Blood", ncells)
+names(Organ) <- colnames(sce)
+# (all cells are blood in this dataset)
+sce$Organ <- Organ
+
+## ----- ENRICHMENT -----
+Enrichment <- ifelse(
+  sce$doubletClassify_between_label %in% as.character(1:6),
+  "Enriched",
+  "Not_enriched"
+)
+sce$Enrichment <- Enrichment
+
+## ----- CELL TYPE (Myeloid vs Stem_cells) -----
+Cell_type <- rep(NA_character_, ncells)
+names(Cell_type) <- colnames(sce)
+
+# Myeloid (Lane_1 for labels 1–6 and Lane_2 for labels 7–8)
+idx_myeloid <- (
+  (sce$doubletClassify_between_label %in% as.character(1:6) & sce$Lane == "Lane_1") |
+  (sce$doubletClassify_between_label %in% c("7", "8") & sce$Lane == "Lane_2")
+)
+Cell_type[idx_myeloid] <- "Myeloid"
+
+# Stem cells (Lane_2 for labels 1–6)
+idx_stem <- (
+  sce$doubletClassify_between_label %in% as.character(1:6) &
+  sce$Lane == "Lane_2"
+)
+Cell_type[idx_stem] <- "Stem_cells"
+
+sce$Cell_type <- Cell_type
+```
+
+```{r}
+## -------------------------------
+## REMOVE HTO GENES FROM MAIN EXPERIMENT
+## -------------------------------
+
+# In this dataset, HTO genes occupy rows 12026–12033.
+# We retain only the gene-expression rows (1:12025).
+sce <- sce[1:12025, ]
+
+sce
+```
+
+###Normalization, dimensionality reduction and clustering
+Please note that the number of clusters might vary if ran everything from scratch. Follow the next code for mantaining the clusters identified in the paper
+```{r}
+##############################################
+## NORMALIZATION, HVG SELECTION, UMAP & CLUSTERING
+##############################################
+
+library(scuttle)
+library(scran)
+library(scater)
+library(igraph)
+
+## 1. Library-size normalization (logCPM)
+set.seed(100)
+sce <- logNormCounts(sce)
+
+## 2. Per-gene variation and HVG selection
+# Block by treatment or sample if you want; here global:
+dec.sce <- modelGeneVar(sce)
+chosen  <- getTopHVGs(dec.sce, prop = 0.2)   # top 20% HVGs
+str(chosen)
+
+## 3. PCA on HVGs
+set.seed(1458847)
+sce <- runPCA(
+  sce,
+  subset_row = chosen,
+  ncomponents = 30,           # explicit number of PCs
+  name = "PCA_HVGs"
+)
+
+reducedDimNames(sce)
+
+# Optional: inspect explained variance
+percent.var <- attr(reducedDim(sce, "PCA_HVGs"), "percentVar")
+# You could use PCAtools::findElbowPoint(percent.var) here if desired.
+
+## 4. UMAP on PCA
+set.seed(20398)
+sce <- runUMAP(
+  sce,
+  n_dimred = 10,              # use first 10 PCs
+  dimred   = "PCA_HVGs",
+  name     = "UMAP_1"
+)
+
+## 5. Graph-based clustering (shared nearest neighbour)
+set.seed(20300)
+
+# Build SNN graph using PCA space
+sce.g <- buildSNNGraph(
+  sce,
+  k         = 15,
+  use.dimred = "PCA_HVGs"
+)
+
+# Louvain clustering on SNN graph
+cl.louvain <- igraph::cluster_louvain(sce.g)$membership
+
+# Optionally, also compute walktrap clustering (not used by default)
+# cl.walktrap <- igraph::cluster_walktrap(sce.g)$membership
+
+# Store cluster labels in colLabels
+colLabels(sce) <- factor(cl.louvain)
+
+# If you also want them in colData:
+sce$cluster_louvain <- factor(cl.louvain)
+# sce$cluster_walktrap <- factor(cl.walktrap)
+
+```
+
+###Cell annotation
+```{r}
+##############################################
+## SingleR annotation + cluster agreement +
+## manual cell-type assignment + UMAP
+##############################################
+
+## 1) SingleR annotation ----------------------------------------
+
+# `ref` is a reference object with ref$label.main already defined
+# e.g. from celldex::MouseRNAseqData()
+
+pred <- SingleR(
+  test   = sce,
+  ref    = ref,
+  labels = ref$label.main
+)
+
+# Store SingleR labels in the SCE
+sce$SingleR_label        <- pred$labels
+sce$SingleR_pruned_label <- pred$pruned.labels
+
+# Heatmap of SingleR scores
+plotScoreHeatmap(pred)
+
+
+## 2) Cluster vs SingleR label heatmap --------------------------
+
+# Ensure a cluster column exists
+sce$cluster <- colLabels(sce)
+
+tab <- table(
+  Assigned = sce$SingleR_pruned_label,
+  Cluster  = sce$cluster
+)
+
+pheatmap(
+  log2(tab + 10),
+  color = colorRampPalette(c("white", "blue"))(101),
+  main  = "SingleR pruned labels vs clusters"
+)
+
+
+## 3) Manual cell-type assignment (Monocyte / Neutrophil) -------
+
+ncells <- ncol(sce)
+
+# Initialise vector
+Cell_type <- rep(NA_character_, ncells)
+names(Cell_type) <- colnames(sce)
+
+# Make sure cluster labels are characters
+# (assumes sce$label already exists; otherwise use colLabels(sce))
+sce$label <- as.character(sce$label)
+
+# Define cluster → cell-type mapping
+monocyte_clusters   <- c("1", "9", "8", "10", "6", "3", "4")
+neutrophil_clusters <- c("7", "11", "2", "5", "12")
+
+Cell_type[sce$label %in% monocyte_clusters]   <- "Monocyte"
+Cell_type[sce$label %in% neutrophil_clusters] <- "Neutrophil"
+
+# Store as factor in colData
+sce$Cell_type <- factor(
+  Cell_type,
+  levels = c("Monocyte", "Neutrophil")
+)
+
+
+## 4) UMAP coloured by Cell_type --------------------------------
+
+set.seed(20300)
+
+plotReducedDim(
+  sce,
+  dimred     = "UMAP_1",
+  colour_by  = "Cell_type",
+  text_by    = "Cell_type",
+  point_size = 1
+)
+
+```
+
